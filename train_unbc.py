@@ -74,15 +74,11 @@ def train_unbc(cfg):
         learning_rate=cfg.training.learning_rate,
         weight_decay=cfg.training.weight_decay,
         max_epochs=cfg.training.max_epochs,
-        freeze_backbone_epochs=cfg.training.freeze_backbone_epochs,
         au_loss_weight=cfg.loss.au_loss_weight,
         pspi_loss_weight=cfg.loss.pspi_loss_weight,
         lora_rank=cfg.training.lora_rank,
         lora_alpha=cfg.training.lora_alpha,
         use_neutral_reference=cfg.model.use_neutral_reference,
-        use_contrastive_loss=cfg.loss.use_contrastive_loss,
-        contrastive_loss_weight=cfg.loss.contrastive_loss_weight,
-        use_binary_classification_head=cfg.model.use_binary_classification_head,
         dropout_rate=cfg.unbc.dropout_rate,
     )
     

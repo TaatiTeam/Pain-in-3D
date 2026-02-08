@@ -3,3 +3,9 @@ __pycache__/
 
 # datasets
 datasets*
+
+# pain_env
+pain_env/
+
+# testing files
+test_training.py

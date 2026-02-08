@@ -32,7 +32,6 @@ def run_unbc_5fold_cv(
     use_neutral_reference=False,
     multi_shot_inference=1,
     use_weighted_sampling=False,
-    use_binary_classification_head=True,  # Default: enabled
     folds=None,
 ):
     """
@@ -43,7 +42,7 @@ def run_unbc_5fold_cv(
     - weight_decay: 1e-1
     - precision: 16-bit
     - image_size: 224
-    - freeze_backbone: always (backbone frozen, only LoRA adapters trained)
+    - backbone: always frozen (only LoRA adapters trained)
     - au_loss_weight: 0.1
     - pspi_loss_weight: 1.0
     - wandb_project: "unbc-5fold-cv"
@@ -64,7 +63,6 @@ def run_unbc_5fold_cv(
         use_neutral_reference: Whether to use neutral reference images (default: False)
         multi_shot_inference: Number of neutral references for multi-shot inference (default: 1)
         use_weighted_sampling: Whether to use weighted sampling for class imbalance (default: False)
-        use_binary_classification_head: Whether to use binary classification head (default: True)
         folds: List of specific folds to run (default: None runs all 5 folds)
     """
     
@@ -89,7 +87,7 @@ def run_unbc_5fold_cv(
     weight_decay = 1e-1
     precision = 16
     image_size = 224
-    freeze_backbone_epochs = 9999  # Keep backbone frozen (only train LoRA)
+    # Backbone is always frozen (only LoRA adapters are trained)
     au_loss_weight = 0.1
     pspi_loss_weight = 1.0
     wandb_project = "unbc-5fold-cv"
@@ -102,7 +100,7 @@ def run_unbc_5fold_cv(
     print(f"Learning rate: {learning_rate} (fixed)")
     print(f"Weight decay: {weight_decay} (fixed)")
     print(f"Precision: {precision}-bit (fixed)")
-    print(f"Freeze backbone: Always (only train LoRA adapters)")
+    print(f"Backbone: Always frozen (only LoRA adapters are trained)")
     print(f"Output directory: {output_dir}")
     print(f"Wandb project: {wandb_project}")
     print(f"Wandb group: {wandb_group}")
@@ -160,7 +158,6 @@ def run_unbc_5fold_cv(
             "--max_epochs", str(max_epochs),
             "--learning_rate", str(learning_rate),
             "--weight_decay", str(weight_decay),
-            "--freeze_backbone_epochs", str(freeze_backbone_epochs),
             "--precision", str(precision),
             "--output_dir", output_dir,  # Base directory - train_unbc.py will create fold_{fold} inside
             "--wandb_project", wandb_project,
@@ -184,10 +181,6 @@ def run_unbc_5fold_cv(
             
         if use_weighted_sampling:
             cmd.append("--use_weighted_sampling")
-
-        # Binary classification head is enabled by default
-        if use_binary_classification_head:
-            cmd.append("--use_binary_classification_head")
 
         # Multi-shot inference (only meaningful with neutral reference)
         if use_neutral_reference and int(multi_shot_inference) > 1:
@@ -321,22 +314,6 @@ def main():
         ),
     )
 
-    parser.add_argument(
-        "--use_binary_classification_head",
-        action="store_true",
-        default=True,
-        help=(
-            "Enable binary classification head for pain/no-pain (default: True). "
-            "Use --no_binary_classification_head to disable."
-        ),
-    )
-    parser.add_argument(
-        "--no_binary_classification_head",
-        action="store_false",
-        dest="use_binary_classification_head",
-        help="Disable binary classification head"
-    )
-    
     args = parser.parse_args()
     
     # Set defaults based on whether pretrained checkpoint is provided
@@ -361,7 +338,6 @@ def main():
         use_neutral_reference=args.use_neutral_reference,
         multi_shot_inference=args.multi_shot_inference,
         use_weighted_sampling=args.use_weighted_sampling,
-        use_binary_classification_head=args.use_binary_classification_head,
         folds=args.folds,
     )
 

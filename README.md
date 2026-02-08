@@ -2,9 +2,11 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-A clean implementation for automated pain assessment using vision transformers. This codebase supports training on both synthetic 3D pain face datasets and the UNBC-McMaster Shoulder Pain Expression Archive.
+Official implementation of the paper **Pain in 3D: Generating Controllable Synthetic Faces for Automated Pain Assessment**. This codebase supports training on both synthetic 3D pain face datasets and the UNBC-McMaster Shoulder Pain Expression Archive.
 
 ## 📄 Overview
+
+![Sample Pain Faces](figures/preamble.png)
 
 This implementation provides tools for automated pain assessment through:
 - Reference-guided Vision Transformers (ViTPain) for pain intensity estimation
@@ -15,12 +17,8 @@ This implementation provides tools for automated pain assessment through:
 ## 🖼️ Visual Overview
 
 ### Synthetic 3D Pain Face Generation
-![Data Generation Pipeline](figures/data_generation.png)
+![Data Generation Pipeline](figures/3dpain_pipeline.png)
 *Controllable 3D pain face synthesis using parametric facial models with AU-based deformations*
-
-### Dataset Samples
-![Sample Pain Faces](figures/samples.png)
-*Examples of synthetic pain faces with varying PSPI intensities and Action Unit combinations*
 
 ### Model Architecture
 ![ViTPain Architecture](figures/architecture.png)

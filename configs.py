@@ -11,8 +11,8 @@ class ModelConfig:
     model_size: str = "large_dinov3"  # Default to large DinoV3
     use_neutral_reference: bool = False
     multi_shot_inference: int = 1
-    use_binary_classification_head: bool = False
-    # Note: use_au_query_head and use_lora are now always enabled in the model
+    # Always-on features (not configurable):
+    # - DinoV3 backbone, LoRA adapters, AU query head, binary classification heads
 
 
 @dataclass
@@ -22,8 +22,8 @@ class TrainingConfig:
     max_epochs: int = 100
     learning_rate: float = 1e-4  # Fixed: always 1e-4
     weight_decay: float = 1e-1  # Fixed: always 1e-1
-    freeze_backbone_epochs: int = 9999  # Fixed: always frozen (only train LoRA adapters)
     precision: int = 16  # Fixed: always 16-bit
+    # Backbone is always frozen; only LoRA adapters are trained.
     log_every_n_steps: int = 10
     random_seed: Optional[int] = 42
     lora_rank: int = 8  # LoRA is always enabled
@@ -49,8 +49,6 @@ class LossConfig:
     """Loss configuration"""
     au_loss_weight: float = 0.1  # Fixed: always 0.1
     pspi_loss_weight: float = 1.0  # Fixed: always 1.0
-    use_contrastive_loss: bool = False
-    contrastive_loss_weight: float = 0.1
 
 
 @dataclass
@@ -91,7 +89,6 @@ class UNBCConfig:
     max_epochs: int = 100
     learning_rate: float = 1e-4
     weight_decay: float = 1e-1
-    freeze_backbone_epochs: int = 5
     inner_validation: str = "last_epoch"
     report_best_validation: bool = False
 
