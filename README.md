@@ -176,20 +176,20 @@ python scripts/run_unbc_5fold_cv.py \
 PainGeneration_clean/
 ├── data/                          # Data loaders
 │   ├── unbc_loader.py            # UNBC-McMaster dataset loader
-│   ├── synthetic_face_loader.py  # Synthetic dataset loader
+│   ├── pain3d_loader.py          # 3D synthetic pain face dataset loader
 │   ├── split_utils.py            # Split utilities
 │   └── utils/
 │       └── threshold_calibration.py # Binary threshold calibration
 ├── lib/                           # Library code
 │   ├── models/                   # Model definitions
-│   │   ├── pspi_vit_regressor.py    # ViTPain model
+│   │   ├── vitpain.py               # ViTPain model
 │   │   └── pspi_evaluator_mixin.py  # Evaluation metrics
 │   └── utils/                    # Utility functions
 ├── scripts/                       # Training scripts
 │   └── run_unbc_5fold_cv.py      # 5-fold cross-validation
 ├── train_unbc.py                 # Train on UNBC-McMaster
 ├── train_vitpain.py              # Train on synthetic data
-├── configs.py                    # Configuration management
+├── configs/                      # Configuration management
 ├── requirements.txt              # Python dependencies
 └── README.md                     # This file
 ```

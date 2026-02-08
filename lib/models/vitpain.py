@@ -3,51 +3,42 @@ import torch.nn as nn
 import torch.nn.functional as F
 import pytorch_lightning as pl
 import numpy as np
-import os
 from torch.optim import AdamW
 from torch.optim.lr_scheduler import CosineAnnealingLR
-import torchmetrics
+from peft import LoraConfig, get_peft_model, TaskType
 
 from .pspi_evaluator_mixin import PSPIEvaluatorMixin
 
-# Import PEFT for LoRA support
-try:
-    from peft import LoraConfig, get_peft_model, TaskType
-    PEFT_AVAILABLE = True
-except ImportError:
-    PEFT_AVAILABLE = False
-    print("Warning: PEFT library not available. LoRA functionality will be disabled.")
 
-
-class PSPIViTRegressor(PSPIEvaluatorMixin, pl.LightningModule):
+class ViTPain(PSPIEvaluatorMixin, pl.LightningModule):
     def __init__(
         self,
         model_name="timm/vit_large_patch16_dinov3.sat493m",
-        num_classes=1,  # Number of output dimensions (1 for regression)
+        num_classes=1,
         num_au_features=6,
         learning_rate=1e-4,
         weight_decay=1e-2,
         max_epochs=100,
-        au_loss_weight=1.0,  # Weight for AU regression loss
-        pspi_loss_weight=1.0,  # Weight for PSPI regression loss
-        dropout_rate=0.5,  # Default dropout
-        lora_rank=8,  # LoRA rank
-        lora_alpha=16,  # LoRA alpha
-        test_stage_name="test",  # Stage name for test step (can be overridden to "test_unbc")
-        use_neutral_reference=False,  # Whether to use a neutral reference image
+        au_loss_weight=1.0,
+        pspi_loss_weight=1.0,
+        dropout_rate=0.5,
+        lora_rank=8,
+        lora_alpha=16,
+        test_stage_name="test",
+        use_neutral_reference=False,
     ):
         """
         Vision Transformer for PSPI (Pain Score) regression and AU regression.
-        
+
         Always uses:
         - DinoV3 backbone (always frozen)
         - LoRA adapters (only trainable backbone parameters)
         - AU query head (cross-attention for AU prediction)
         - Binary classification heads (pain/no-pain at thresholds 1, 2, 3)
-        
+
         Args:
             model_name: Pretrained ViT model name (must be a DinoV3 timm model)
-            num_classes: Number of output dimensions (1 for regression)
+            num_classes: Number of output dimensions
             num_au_features: Number of Action Unit features (6 for AU4,6,7,9,10,43)
             learning_rate: Learning rate for optimization
             weight_decay: Weight decay for regularization
@@ -55,63 +46,44 @@ class PSPIViTRegressor(PSPIEvaluatorMixin, pl.LightningModule):
             au_loss_weight: Weight for AU regression loss
             pspi_loss_weight: Weight for PSPI regression loss
             dropout_rate: Dropout rate for regularization
-            lora_rank: LoRA rank (default: 8)
-            lora_alpha: LoRA alpha (default: 16)
+            lora_rank: LoRA rank
+            lora_alpha: LoRA alpha
             use_neutral_reference: Whether to use a neutral reference image
         """
         super().__init__()
         self.save_hyperparameters()
-        
-        # Store parameters
+
         self.dropout_rate = dropout_rate
         self.lora_rank = lora_rank
         self.lora_alpha = lora_alpha
         self.test_stage_name = test_stage_name
         self.use_neutral_reference = use_neutral_reference
 
-        # Load pretrained DinoV3 backbone from timm (always)
         import timm
         timm_model_name = model_name.replace("timm/", "")
-        # normalize potential outdated weight tags
+        # Normalize potential outdated weight tags
         timm_model_name = timm_model_name.replace("sat_493m", "sat493m").replace("lvd_1689m", "lvd1689m")
-        print(f"Loading DinoV3 pretrained weights from timm: {timm_model_name}")
-        self.vit_model = timm.create_model(
-            timm_model_name,
-            pretrained=True,
-            num_classes=0
-        )
-        print(f"Successfully loaded DinoV3 pretrained weights")
+        self.vit_model = timm.create_model(timm_model_name, pretrained=True, num_classes=0)
+
         hidden_size = getattr(self.vit_model, "num_features", None)
         if hidden_size is None:
             hidden_size = getattr(self.vit_model, "embed_dim", None)
         if hidden_size is None:
             raise RuntimeError("Could not determine hidden size from timm model.")
-        
-        # Apply LoRA (always enabled)
-        if not PEFT_AVAILABLE:
-            raise ImportError("PEFT library is required for LoRA. Please install it: pip install peft")
-        
+
         lora_config = LoraConfig(
             task_type=TaskType.FEATURE_EXTRACTION,
             r=lora_rank,
             lora_alpha=lora_alpha,
-            target_modules=["qkv", "proj"],  # Target attention layers
+            target_modules=["qkv", "proj"],
             lora_dropout=0.1,
         )
         self.vit_model = get_peft_model(self.vit_model, lora_config)
-        print(f"Applied LoRA to model with rank={lora_rank}, alpha={lora_alpha}")
-        
-        # Initialize Neutral Face Encoder and Cross-Attention if requested
+
         if self.use_neutral_reference:
-            print("Initializing Neutral Face Encoder and Cross-Attention...")
-            self.neutral_encoder = timm.create_model(
-                timm_model_name,
-                pretrained=True,
-                num_classes=0
-            )
+            self.neutral_encoder = timm.create_model(timm_model_name, pretrained=True, num_classes=0)
             self.neutral_encoder = get_peft_model(self.neutral_encoder, lora_config)
-            
-            # Cross-Attention: Pain (Query) attends to Neutral (Key/Value)
+            # Cross-Attention: Pain (Q) attends to Neutral (K/V) to highlight pain-specific features
             self.neutral_cross_attn = nn.MultiheadAttention(embed_dim=hidden_size, num_heads=8, batch_first=True)
             self.neutral_norm = nn.LayerNorm(hidden_size)
         else:
@@ -119,7 +91,6 @@ class PSPIViTRegressor(PSPIEvaluatorMixin, pl.LightningModule):
             self.neutral_cross_attn = None
             self.neutral_norm = None
 
-        # Regression head for PSPI prediction (uses configurable dropout)
         self.pspi_head = nn.Sequential(
             nn.LayerNorm(hidden_size),
             nn.Dropout(dropout_rate),
@@ -132,10 +103,9 @@ class PSPIViTRegressor(PSPIEvaluatorMixin, pl.LightningModule):
             nn.Linear(256, 128),
             nn.GELU(),
             nn.Dropout(dropout_rate * 0.6),
-            nn.Linear(128, 1),  # Output 1 value for regression
+            nn.Linear(128, 1),
         )
 
-        # Binary classifier heads for pain/no-pain at PSPI thresholds 1/2/3 (always enabled).
         self.binary_pspi_thresholds = (1.0, 2.0, 3.0)
         self.pspi_binary_heads = nn.ModuleDict(
             {
@@ -147,8 +117,7 @@ class PSPIViTRegressor(PSPIEvaluatorMixin, pl.LightningModule):
                 for thr in self.binary_pspi_thresholds
             }
         )
-        
-        # AU prediction heads (uses configurable dropout)
+
         self.au_shared_features = nn.Sequential(
             nn.LayerNorm(hidden_size),
             nn.Dropout(dropout_rate * 0.6),
@@ -157,31 +126,23 @@ class PSPIViTRegressor(PSPIEvaluatorMixin, pl.LightningModule):
             nn.Dropout(dropout_rate * 0.6),
         )
 
-        # AU query head (always enabled)
         num_aus = 6  # AU4, AU6, AU7, AU9, AU10, AU43
         self.au_queries = nn.Parameter(torch.randn(num_aus, hidden_size))
-
-        # Individual regression heads for each AU (single output each)
         self.au_head = nn.Linear(512, 1)
-        
-        # Loss weights
+
         self.pspi_loss_weight = pspi_loss_weight
         self.au_loss_weight = au_loss_weight
-        
-        # Initialize metrics using mixin
         self._init_pspi_metrics()
-
-        # Track current epoch for backbone freezing
         self.current_epoch_count = 0
-        
+
     def _extract_tokens(self, images, model=None):
         """Return (cls_features, patch_features) from the timm DinoV3 backbone."""
         if model is None:
             model = self.vit_model
-        
+
         x = model.patch_embed(images)
         B = x.shape[0]
-        
+
         if x.dim() == 4:
             if hasattr(model, 'embed_dim'):
                 embed_dim = model.embed_dim
@@ -193,7 +154,7 @@ class PSPIViTRegressor(PSPIEvaluatorMixin, pl.LightningModule):
                     x = x.flatten(2).transpose(1, 2)
             else:
                 x = x.flatten(2).transpose(1, 2)
-        
+
         if hasattr(model, "cls_token") and model.cls_token is not None:
             cls_tokens = model.cls_token.expand(B, -1, -1)
             x = torch.cat((cls_tokens, x), dim=1)
@@ -221,93 +182,71 @@ class PSPIViTRegressor(PSPIEvaluatorMixin, pl.LightningModule):
         return cls_features, patch_features
 
     def forward(self, pixel_values, neutral_pixel_values=None):
-        """Forward pass through the model."""
         cls_features, patch_features = self._extract_tokens(pixel_values)
-        
-        # Apply cross-attention with neutral reference if available
+
         if self.use_neutral_reference and neutral_pixel_values is not None and self.neutral_encoder is not None:
-            # Extract neutral features
             neutral_cls, neutral_patch = self._extract_tokens(neutral_pixel_values, model=self.neutral_encoder)
-            
-            # Concatenate CLS and Patch tokens for attention
-            # Pain tokens (Query)
-            pain_tokens = torch.cat([cls_features.unsqueeze(1), patch_features], dim=1)
-            # Neutral tokens (Key/Value)
-            neutral_tokens = torch.cat([neutral_cls.unsqueeze(1), neutral_patch], dim=1)
-            
-            # Cross-Attention: Pain attends to Neutral
-            # This highlights differences from neutral state
+
+            pain_tokens = torch.cat([cls_features.unsqueeze(1), patch_features], dim=1)       # Query
+            neutral_tokens = torch.cat([neutral_cls.unsqueeze(1), neutral_patch], dim=1)       # Key/Value
+
             attn_output, _ = self.neutral_cross_attn(pain_tokens, neutral_tokens, neutral_tokens)
-            
-            # Residual connection + Norm
             enhanced_tokens = self.neutral_norm(pain_tokens + attn_output)
-            
-            # Split back into CLS and Patch features
+
             cls_features = enhanced_tokens[:, 0]
             patch_features = enhanced_tokens[:, 1:]
-        
-        # PSPI prediction (regression) - apply sigmoid to ensure [0, 1] range
-        pspi_pred = F.sigmoid(self.pspi_head(cls_features).squeeze(-1))  # [batch_size]
+
+        # Sigmoid ensures output in [0, 1] range
+        pspi_pred = F.sigmoid(self.pspi_head(cls_features).squeeze(-1))
 
         pspi_binary_logits = {k: head(cls_features).squeeze(-1) for k, head in self.pspi_binary_heads.items()}
         pspi_binary_probs = {k: torch.sigmoid(v) for k, v in pspi_binary_logits.items()}
-        
-        # AU prediction: use query head cross-attention (always enabled)
+
+        # AU prediction via cross-attention query tokens
         B = cls_features.shape[0]
-        # AU attention pooling with query tokens
         N, D = patch_features.shape[1], patch_features.shape[2]
         queries = self.au_queries.unsqueeze(0).expand(B, -1, -1)  # [B, num_aus, D]
-        keys = patch_features
-        values = patch_features
-        attn_scores = torch.matmul(queries, keys.transpose(1, 2)) / (D ** 0.5)  # [B, num_aus, N]
+        attn_scores = torch.matmul(queries, patch_features.transpose(1, 2)) / (D ** 0.5)  # [B, num_aus, N]
         attn_weights = F.softmax(attn_scores, dim=-1)
-        au_pooled = torch.matmul(attn_weights, values)  # [B, num_aus, D]
+        au_pooled = torch.matmul(attn_weights, patch_features)  # [B, num_aus, D]
 
-        # Apply ReLU to ensure non-negative values (as in reference)
         au_features = self.au_shared_features(au_pooled)  # [B, num_aus, 512]
         au_preds = F.relu(self.au_head(au_features).squeeze(-1))  # [B, num_aus]
-        
+
         return {
-            'au_preds': au_preds,              # AU continuous predictions [batch_size, 6]
-            'au_expected': au_preds,           # Same as au_preds for compatibility
-            'pspi_pred': pspi_pred,            # PSPI regression prediction [batch_size]
-            'pspi_expected': pspi_pred,        # Alias for consistency
-            'pspi_binary_logits': pspi_binary_logits,  # Dict[str -> Tensor[batch_size]] (logits)
-            'pspi_binary_probs': pspi_binary_probs,    # Dict[str -> Tensor[batch_size]] (sigmoid)
+            'au_preds': au_preds,
+            'au_expected': au_preds,
+            'pspi_pred': pspi_pred,
+            'pspi_expected': pspi_pred,
+            'pspi_binary_logits': pspi_binary_logits,
+            'pspi_binary_probs': pspi_binary_probs,
             'features': cls_features,
         }
-    
+
     def training_step(self, batch, batch_idx):
-        """Training step."""
         return self._shared_step(batch, batch_idx, stage="train")
-    
+
     def validation_step(self, batch, batch_idx):
-        """Validation step."""
         return self._shared_step(batch, batch_idx, stage="val")
-    
+
     def test_step(self, batch, batch_idx):
-        """Test step."""
         return self._shared_step(batch, batch_idx, stage=self.test_stage_name)
-    
+
     def _shared_step(self, batch, batch_idx, stage):
-        """Shared step for train/val/test."""
         images = batch['image']
-        pspi_target_raw = batch['pspi_score'].float()  # Regression target (could be [0, 16] or [0, 1])
-        au_target = batch['au_vector'].float()      # AU features for regression
-        
-        # Get neutral image if available
+        pspi_target_raw = batch['pspi_score'].float()  # Could be [0, 16] or [0, 1]
+        au_target = batch['au_vector'].float()
         neutral_images = batch.get('neutral_image', None)
 
-        # Forward pass (supports multi-shot neutral references at inference time)
-        outputs = None  # Will be set in single-shot path; None in multi-shot path
+        # Multi-shot neutral references: average predictions across N neutral refs at inference time
+        outputs = None
         if (
             neutral_images is not None
             and isinstance(neutral_images, torch.Tensor)
             and neutral_images.dim() == 5
             and stage != "train"
         ):
-            # neutral_images: [B, N, C, H, W]
-            num_shots = neutral_images.shape[1]
+            num_shots = neutral_images.shape[1]  # [B, N, C, H, W]
             au_sum = None
             pspi_head_sum = None
             pspi_from_au_sum = None
@@ -325,10 +264,10 @@ class PSPIViTRegressor(PSPIEvaluatorMixin, pl.LightningModule):
 
             au_preds = au_sum / float(num_shots)
             pspi_pred_head = pspi_head_sum / float(num_shots)
-            pspi_from_au = pspi_from_au_sum / float(num_shots)  # denormalized
-            outputs = outputs_shot  # Keep last shot's outputs for binary logits access
+            pspi_from_au = pspi_from_au_sum / float(num_shots)
+            outputs = outputs_shot  # Keep last shot's outputs for binary logits
         else:
-            # If a 5D tensor is accidentally provided during training, just use the first neutral.
+            # If 5D tensor provided during training, just use the first neutral
             if (
                 neutral_images is not None
                 and isinstance(neutral_images, torch.Tensor)
@@ -341,22 +280,18 @@ class PSPIViTRegressor(PSPIEvaluatorMixin, pl.LightningModule):
             pspi_pred_head = outputs['pspi_pred']
             pspi_from_au = self._calculate_pspi_from_au(au_preds)
 
-        # Inference-time option: ignore PSPI head and derive PSPI from AU head
-        # Training still uses the PSPI head as auxiliary supervision.
+        # Optionally derive PSPI from AU head instead of direct PSPI head at inference
         use_derived_pspi = (stage != "train") and bool(getattr(self.hparams, "no_inference_pspi_head", False))
         if use_derived_pspi:
             pspi_pred = self._normalize_pspi(pspi_from_au, pspi_max=16.0)
         else:
-            pspi_pred = pspi_pred_head  # Model output is in [0, 1] range
-        
-        # Normalize targets to [0, 1] for loss computation
-        # We assume targets from dataloader are always denormalized [0, 16]
+            pspi_pred = pspi_pred_head  # Already in [0, 1]
+
+        # Targets from dataloader are denormalized [0, 16]; normalize for loss
         pspi_target_normalized = self._normalize_pspi(pspi_target_raw, pspi_max=16.0)
-        
-        # PSPI loss (MSE) - use normalized values
+
         pspi_loss = F.mse_loss(pspi_pred, pspi_target_normalized)
 
-        # Auxiliary binary classification losses: thresholds 1/2/3
         pspi_binary_loss = torch.tensor(0.0, device=self.device)
         if outputs is not None:
             logits_dict = outputs.get('pspi_binary_logits') or {}
@@ -371,23 +306,17 @@ class PSPIViTRegressor(PSPIEvaluatorMixin, pl.LightningModule):
 
             if len(per_thr_losses) > 0:
                 pspi_binary_loss = torch.stack(per_thr_losses).mean()
-        
-        # AU regression loss (MSE)
+
         au_loss = F.mse_loss(au_preds, au_target)
-        
-        # Total loss
+
         total_loss = (
             self.pspi_loss_weight * pspi_loss
             + self.au_loss_weight * au_loss
             + pspi_binary_loss
         )
 
-        # Update metrics using mixin method
-        # Pass raw target (will be handled by _update_pspi_metrics)
         batch_size = images.size(0)
         self._update_pspi_metrics(pspi_pred, pspi_target_raw, au_preds, au_target, pspi_from_au, stage, targets_already_denormalized=True)
-        
-        # Log metrics using mixin method
         self._log_pspi_metrics(
             stage=stage,
             batch_size=batch_size,
@@ -398,130 +327,55 @@ class PSPIViTRegressor(PSPIEvaluatorMixin, pl.LightningModule):
             pspi_pred=pspi_pred,
             pspi_target=pspi_target_raw
         )
-
         self.log(f"{stage}/loss/pspi_binary", pspi_binary_loss, on_step=False, on_epoch=True, batch_size=batch_size)
-        
+
         return total_loss
-    
+
     def on_train_epoch_end(self):
-        """Called at the end of each training epoch."""
         self.current_epoch_count += 1
-        
-        # Compute epoch-end metrics (tolerance accuracies, CCC, ICC)
         self._compute_epoch_end_metrics("train", batch_size=1)
-        
-        if self.trainer.is_global_zero:
-            print(f"Epoch {self.current_epoch} completed.", flush=True)
-        
+
     def on_validation_epoch_end(self):
-        """Called at the end of each validation epoch."""
-        # Compute epoch-end metrics (tolerance accuracies, CCC, ICC)
-        # This will store _last_val_mae and _last_val_corr before resetting metrics
         self._compute_epoch_end_metrics("val", batch_size=1)
-        
-        # Print validation metrics
-        # Use stored values from _compute_and_log_torchmetrics if available,
-        # otherwise fall back to logged_metrics
-        if self.trainer.is_global_zero:
-            try:
-                # Get loss from logged_metrics (this is logged during validation_step)
-                val_loss = self.trainer.logged_metrics.get('val/loss/total', 0.0)
-                
-                # Try to get MAE and correlation from stored values (computed before reset)
-                val_mae = getattr(self, '_last_val_mae', None)
-                val_corr = getattr(self, '_last_val_corr', None)
-                
-                # Fall back to logged_metrics if stored values not available
-                if val_mae is None:
-                    val_mae_metric = self.trainer.logged_metrics.get('val/regression/mae', 0.0)
-                    if isinstance(val_mae_metric, torch.Tensor):
-                        val_mae = val_mae_metric.item()
-                    else:
-                        val_mae = float(val_mae_metric)
-                
-                if val_corr is None:
-                    val_corr_metric = self.trainer.logged_metrics.get('val/regression/corr', 0.0)
-                    if isinstance(val_corr_metric, torch.Tensor):
-                        val_corr = val_corr_metric.item() if not torch.isnan(val_corr_metric) else 0.0
-                    else:
-                        val_corr = float(val_corr_metric) if not (isinstance(val_corr_metric, float) and (val_corr_metric != val_corr_metric)) else 0.0
-                
-                # Convert loss to float if it's a tensor
-                if isinstance(val_loss, torch.Tensor):
-                    val_loss = val_loss.item()
-                else:
-                    val_loss = float(val_loss)
-                
-                print(f"  Val Loss: {val_loss:.4f} | MAE: {val_mae:.4f} | Corr: {val_corr:.4f}", flush=True)
-            except (RuntimeError, AttributeError, Exception) as e:
-                # If accessing metrics fails (e.g., due to distributed sync issues),
-                # just skip printing but don't crash
-                print(f"  Could not retrieve validation metrics: {e}", flush=True)
-    
+
     def on_test_epoch_end(self):
-        """Called at the end of each test epoch."""
-        # Debug: Check if predictions were accumulated
-        if self.test_stage_name == 'test_unbc':
-            preds_list_name = 'test_unbc_preds'
-        elif self.test_stage_name == 'last_epoch_test':
-            preds_list_name = 'last_epoch_test_preds'
-        else:
-            preds_list_name = 'test_preds'
-        
-        if hasattr(self, preds_list_name):
-            preds_list = getattr(self, preds_list_name)
-            print(f"on_test_epoch_end: {preds_list_name} has {len(preds_list)} batches")
-            if len(preds_list) > 0:
-                total_samples = sum(pred.shape[0] for pred in preds_list)
-                print(f"on_test_epoch_end: Total test samples: {total_samples}")
-        else:
-            print(f"WARNING: {preds_list_name} does not exist in on_test_epoch_end!")
-        
-        # Compute epoch-end metrics
         self._compute_epoch_end_metrics(self.test_stage_name, batch_size=1)
-    
+
     def on_train_epoch_start(self):
-        """Ensure backbone stays frozen and only LoRA adapters are trainable."""
-        # Freeze all backbone parameters
+        """Freeze backbone, re-enable only LoRA adapter parameters."""
         for param in self.vit_model.parameters():
             param.requires_grad = False
-        
-        # Re-enable LoRA adapter parameters
         for name, param in self.vit_model.named_parameters():
             if 'lora' in name.lower() or 'modules_to_save' in name.lower():
                 param.requires_grad = True
-    
+
     def configure_optimizers(self):
-        """Configure optimizers and learning rate schedulers."""
         backbone_params = list(self.vit_model.parameters())
-        head_params = (list(self.pspi_head.parameters()) + 
+        head_params = (list(self.pspi_head.parameters()) +
               list(self.au_shared_features.parameters()) +
               list(self.au_head.parameters()) +
               list(self.pspi_binary_heads.parameters()))
-        
-        # Add neutral reference attention parameters if they exist
+
         if self.neutral_cross_attn is not None:
             head_params.extend(list(self.neutral_cross_attn.parameters()))
         if self.neutral_norm is not None:
             head_params.extend(list(self.neutral_norm.parameters()))
-            
-        # Add neutral encoder LoRA parameters if they exist
         if self.neutral_encoder is not None:
              for name, param in self.neutral_encoder.named_parameters():
                 if 'lora' in name.lower() or 'modules_to_save' in name.lower():
                     backbone_params.append(param)
-        
+
         optimizer = AdamW([
             {'params': backbone_params, 'lr': self.hparams.learning_rate * 0.1},
             {'params': head_params, 'lr': self.hparams.learning_rate}
         ], weight_decay=self.hparams.weight_decay)
-        
+
         scheduler = CosineAnnealingLR(
-            optimizer, 
+            optimizer,
             T_max=self.hparams.max_epochs,
             eta_min=self.hparams.learning_rate * 0.01
         )
-        
+
         return {
             "optimizer": optimizer,
             "lr_scheduler": {
@@ -531,22 +385,19 @@ class PSPIViTRegressor(PSPIEvaluatorMixin, pl.LightningModule):
                 "frequency": 1,
             },
         }
-    
+
     def predict_pspi(self, images):
         """Predict PSPI scores for a batch of images."""
         self.eval()
         with torch.no_grad():
             outputs = self(images)
-            au_expected = outputs['au_expected']
-            pspi_pred = outputs['pspi_pred']
-            
         return {
-            'au_expected_values': au_expected.cpu().numpy(),
-            'pspi_predicted': pspi_pred.cpu().numpy(),
+            'au_expected_values': outputs['au_expected'].cpu().numpy(),
+            'pspi_predicted': outputs['pspi_pred'].cpu().numpy(),
         }
 
 
-def create_pspi_vit_model(
+def create_vitpain_model(
     model_size="large_dinov3",
     lora_rank=8,
     lora_alpha=16,
@@ -555,39 +406,33 @@ def create_pspi_vit_model(
     """
     Create a PSPI ViT model with DinoV3 backbone, LoRA adapters, AU query head,
     and binary classification heads.
-    
-    All model sizes use DinoV3 backbones. The following features are always enabled:
-    - DinoV3 backbone (always frozen)
-    - LoRA adapters (only trainable parameters)
-    - AU query head (cross-attention for AU prediction)
-    - Binary classification heads (pain/no-pain at thresholds 1, 2, 3)
-    
+
     Args:
         model_size: Model size ("small_dinov3", "base_dinov3", "large_dinov3")
-        lora_rank: LoRA rank (default: 8)
-        lora_alpha: LoRA alpha (default: 16)
-        **kwargs: Additional arguments passed to PSPIViTRegressor
+        lora_rank: LoRA rank
+        lora_alpha: LoRA alpha
+        **kwargs: Additional arguments passed to ViTPain
     """
     model_configs = {
         "small_dinov3": "timm/vit_small_patch16_dinov3.sat493m",
         "base_dinov3": "timm/vit_base_patch16_dinov3.sat493m",
         "large_dinov3": "timm/vit_large_patch16_dinov3.sat493m",
     }
-    
+
     if model_size not in model_configs:
         raise ValueError(f"model_size must be one of {list(model_configs.keys())}")
-    
+
     model_name = model_configs[model_size]
-    
-    # Remove any conflicting kwargs that are hardcoded or no longer used
+
+    # Pop legacy kwargs for backward compatibility with old calling conventions
     kwargs.pop('use_lora', None)
     kwargs.pop('use_binary_classification_head', None)
     kwargs.pop('use_contrastive_loss', None)
     kwargs.pop('contrastive_loss_weight', None)
     kwargs.pop('freeze_backbone_epochs', None)
     kwargs.pop('warmup_steps', None)
-    
-    return PSPIViTRegressor(
+
+    return ViTPain(
         model_name=model_name,
         lora_rank=lora_rank,
         lora_alpha=lora_alpha,
@@ -595,100 +440,31 @@ def create_pspi_vit_model(
     )
 
 def load_pretrained_heatmap_model(checkpoint_path, distilled_model_size="large_dinov3", **kwargs):
+    """Load a pretrained heatmap model from a checkpoint, freezing all parameters."""
     kwargs['model_size'] = distilled_model_size
-    model = create_pspi_vit_model(**kwargs)
-
-    def _summarize_prefixes(keys, max_items=15):
-        counts = {}
-        for key in keys:
-            prefix = key.split('.', 1)[0]
-            counts[prefix] = counts.get(prefix, 0) + 1
-        return sorted(counts.items(), key=lambda kv: kv[1], reverse=True)[:max_items]
+    model = create_vitpain_model(**kwargs)
 
     raw = torch.load(checkpoint_path, map_location='cpu', weights_only=False)
     state_dict = raw['state_dict'] if isinstance(raw, dict) and 'state_dict' in raw else raw
     model_sd = model.state_dict()
 
-    ckpt_keys = set(state_dict.keys())
-    model_keys = set(model_sd.keys())
-    matched = ckpt_keys & model_keys
-    missing = sorted(model_keys - ckpt_keys)
-    unexpected = sorted(ckpt_keys - model_keys)
-    shape_mismatch = sorted([k for k in matched if tuple(model_sd[k].shape) != tuple(state_dict[k].shape)])
     compatible = {k: v for k, v in state_dict.items() if k in model_sd and tuple(model_sd[k].shape) == tuple(v.shape)}
+    model.load_state_dict(compatible, strict=False)
 
-    incompatible = model.load_state_dict(compatible, strict=False)
-    print(f"Loaded pretrained heatmap model from: {checkpoint_path}")
-    print(f"  Checkpoint tensors: {len(ckpt_keys)} | Model tensors: {len(model_keys)}")
-    print(f"  Matched keys: {len(matched)}")
-    print(f"  Shape-mismatched keys (skipped): {len(shape_mismatch)}")
-    if len(shape_mismatch) > 0:
-        print(f"    {shape_mismatch[:20]}{' ...' if len(shape_mismatch) > 20 else ''}")
-    print(f"  Loaded tensors: {len(compatible)}")
-    print(f"  Missing keys: {len(missing)}")
-    if len(missing) > 0:
-        print(f"    {missing[:20]}{' ...' if len(missing) > 20 else ''}")
-    print(f"  Unexpected keys: {len(unexpected)}")
-    if len(unexpected) > 0:
-        print(f"    {unexpected[:20]}{' ...' if len(unexpected) > 20 else ''}")
-    print(f"  Matched prefixes (top): {_summarize_prefixes(matched)}")
-    print(f"  Missing prefixes (top): {_summarize_prefixes(missing)}")
-    print(f"  Unexpected prefixes (top): {_summarize_prefixes(unexpected)}")
     for param in model.parameters():
         param.requires_grad = False
     return model
 
 def load_pretrained_synthetic_data_model(checkpoint_path, synthetic_model_size="large_dinov3", **kwargs):
-    # Default to DinoV3 unless caller explicitly requests a different backbone.
-    # Important: do NOT overwrite kwargs['model_size'] if provided.
+    """Load a pretrained synthetic-data model from a checkpoint."""
     kwargs.setdefault('model_size', synthetic_model_size)
-    model = create_pspi_vit_model(**kwargs)
-
-    def _summarize_prefixes(keys, max_items=15):
-        counts = {}
-        for key in keys:
-            prefix = key.split('.', 1)[0]
-            counts[prefix] = counts.get(prefix, 0) + 1
-        return sorted(counts.items(), key=lambda kv: kv[1], reverse=True)[:max_items]
+    model = create_vitpain_model(**kwargs)
 
     raw = torch.load(checkpoint_path, map_location='cpu', weights_only=False)
     state_dict = raw['state_dict'] if isinstance(raw, dict) and 'state_dict' in raw else raw
     model_sd = model.state_dict()
 
-    ckpt_keys = set(state_dict.keys())
-    model_keys = set(model_sd.keys())
-    matched = ckpt_keys & model_keys
-    missing = sorted(model_keys - ckpt_keys)
-    unexpected = sorted(ckpt_keys - model_keys)
-    shape_mismatch = sorted([k for k in matched if tuple(model_sd[k].shape) != tuple(state_dict[k].shape)])
-
     compatible = {k: v for k, v in state_dict.items() if k in model_sd and tuple(model_sd[k].shape) == tuple(v.shape)}
-    # This avoids hard crashes on size mismatches while still loading everything compatible.
     model.load_state_dict(compatible, strict=False)
-
-    ckpt_lora = sorted([k for k in ckpt_keys if 'lora' in k.lower()])
-    loaded_lora = sorted([k for k in compatible.keys() if 'lora' in k.lower()])
-
-    print(f"Loaded pretrained synthetic model from: {checkpoint_path}")
-    print(f"  Requested model_size: {kwargs.get('model_size')}")
-    print(f"  Checkpoint tensors: {len(ckpt_keys)} | Model tensors: {len(model_keys)}")
-    print(f"  Matched keys: {len(matched)}")
-    print(f"  Shape-mismatched keys (skipped): {len(shape_mismatch)}")
-    if len(shape_mismatch) > 0:
-        print(f"    {shape_mismatch[:20]}{' ...' if len(shape_mismatch) > 20 else ''}")
-    print(f"  Loaded tensors: {len(compatible)}")
-    print(f"  Missing keys: {len(missing)}")
-    if len(missing) > 0:
-        print(f"    {missing[:20]}{' ...' if len(missing) > 20 else ''}")
-    print(f"  Unexpected keys: {len(unexpected)}")
-    if len(unexpected) > 0:
-        print(f"    {unexpected[:20]}{' ...' if len(unexpected) > 20 else ''}")
-    print(f"  Matched prefixes (top): {_summarize_prefixes(matched)}")
-    print(f"  Missing prefixes (top): {_summarize_prefixes(missing)}")
-    print(f"  Unexpected prefixes (top): {_summarize_prefixes(unexpected)}")
-    print(f"  LoRA tensors in checkpoint: {len(ckpt_lora)}")
-    print(f"  LoRA tensors loaded: {len(loaded_lora)}")
-    if len(ckpt_lora) > 0 and len(loaded_lora) == 0:
-        print("  Warning: checkpoint contains LoRA tensors but none matched this model. Model/backbone/PEFT config may differ.")
 
     return model

@@ -1,13 +1,9 @@
 """
-UNBC-McMaster Shoulder Pain Expression Archive Dataset Loader
-Compatible with the existing pain assessment framework and evaluation methodology.
+UNBC-McMaster Shoulder Pain Expression Archive Dataset Loader.
 
-Key Features:
-- Loads UNBC data from HDF5 files (frames and annotations)
-- Supports both regression (PSPI) and binary classification (pain/no-pain)
-- Maintains compatibility with the reference evaluation protocol
-- Provides leave-one-subject-out cross-validation splits
-- Handles AU features extraction for multi-task learning
+Loads UNBC data from HDF5 files, supports PSPI regression and binary classification,
+leave-one-subject-out and 5-fold cross-validation, AU multi-task learning,
+and optional neutral reference images for cross-attention.
 """
 
 import torch
@@ -23,16 +19,11 @@ from PIL import Image
 
 
 class UNBCDataset(Dataset):
-    """
-    UNBC-McMaster Shoulder Pain Expression Archive Dataset
-    
-    This dataset contains facial expressions of shoulder pain from 25 participants.
-    Images are stored in HDF5 format with corresponding AU annotations and PSPI scores.
-    """
-    
+    """UNBC-McMaster Shoulder Pain Expression Archive Dataset."""
+
     def __init__(
-        self, 
-        data_dir="datasets/UNBC-McMaster",  # Already in root datasets/
+        self,
+        data_dir="datasets/UNBC-McMaster",
         transform=None,
         mode="train",
         fold=None,
@@ -41,21 +32,16 @@ class UNBCDataset(Dataset):
         image_size=160,
         use_neutral_reference=False,
         multi_shot_inference=1,
-        inner_validation="last_epoch",
-        inner_val_split_ratio=0.2,
-        inner_val_split_seed=0,
     ):
         """
         Args:
             data_dir: Directory containing UNBC HDF5 files
-            transform: Optional transform to be applied on images
+            transform: Optional image transform
             mode: 'train', 'val', or 'test'
-            fold: Cross-validation fold index. Meaning depends on cv_protocol.
-                  - cv_protocol='5fold': fold is 0-4.
-                  - cv_protocol='loso':  fold is 0-(N_subjects-1) (typically 0-24).
-            cv_protocol: '5fold' (default) or 'loso' (leave-one-subject-out).
-            return_aus: Whether to return AU features along with PSPI
-            image_size: Size to resize images to
+            fold: CV fold index (0-4 for 5fold, 0-24 for LOSO)
+            cv_protocol: '5fold' or 'loso' (leave-one-subject-out)
+            return_aus: Whether to return AU features
+            image_size: Target image size
             use_neutral_reference: Whether to return a neutral reference image (PSPI=0)
         """
         self.data_dir = data_dir
@@ -68,127 +54,91 @@ class UNBCDataset(Dataset):
         self.use_neutral_reference = use_neutral_reference
         self.multi_shot_inference = int(multi_shot_inference) if multi_shot_inference is not None else 1
 
-        # Validation strategy for UNBC folds.
-        # - "last_epoch" (default): train on all train_subjects; use the fold's validation_subjects
-        #   for validation/testing each epoch (best-epoch selection handled in the training script).
-        # - "validation": create an inner validation split from the fold's train_subjects.
-        self.inner_validation = inner_validation
-
-        # Inner split parameters (used when inner_validation == "validation").
-        self.inner_val_split_ratio = float(inner_val_split_ratio)
-        self.inner_val_split_seed = int(inner_val_split_seed)
-        
-        # Load HDF5 files
         self.frames_file = os.path.join(data_dir, "frames_unbc_2020-09-21-05-42-04.hdf5")
         self.annotations_file = os.path.join(data_dir, "annotations_unbc_2020-10-13-22-55-04.hdf5")
         self.folds_file = os.path.join(data_dir, "UNBC_CVFolds_2019-05-16-15-16-36.hdf5")
-        
-        # Verify files exist
+
         for file_path in [self.frames_file, self.annotations_file, self.folds_file]:
             if not os.path.exists(file_path):
                 raise FileNotFoundError(f"Required file not found: {file_path}")
-        
-        # Load data
+
         self._load_data()
-        
+
     def _load_data(self):
-        """Load and index the dataset using subject-based splits"""
-        print(f"Loading UNBC dataset from {self.data_dir}")
-        
+        """Load and index the dataset using subject-based splits."""
+
         with h5py.File(self.frames_file, 'r') as frames_f, \
              h5py.File(self.annotations_file, 'r') as ann_f, \
              h5py.File(self.folds_file, 'r') as folds_f:
-            
-            # Get dataset info
+
             self.images = frames_f['image']
             self.indexes = frames_f['index'][:]
-            
-            # Load subject information
             self.subject_names = ann_f['subject_name'][:]
-            
-            # Fix index mismatch: filter out annotations that point to non-existent frames
+
+            # Filter out annotations pointing to non-existent frames
             max_frame_idx = len(self.images) - 1
             ann_indexes = ann_f['index'][:]
             valid_ann_mask = ann_indexes <= max_frame_idx
-            
+
             if not np.all(valid_ann_mask):
-                invalid_count = np.sum(~valid_ann_mask)
-                print(f"Warning: Found {invalid_count} annotation entries pointing to non-existent frames. Filtering them out.")
-                
-                # Filter all annotation arrays to only include valid entries
                 self.subject_names = self.subject_names[valid_ann_mask]
                 ann_indexes = ann_indexes[valid_ann_mask]
-            
-            # Get all available keys for AU labels
+
             au_keys = [key for key in ann_f.keys() if key.startswith('label_AU_')]
-            print(f"Available AU keys: {sorted(au_keys)}")
-            
-            # Load AU annotations for PSPI calculation (filtered to match valid entries)
+
             if not np.all(valid_ann_mask):
-                # Filter AU annotations to match valid entries
                 self.au4 = ann_f['label_AU_4'][:][valid_ann_mask] if 'label_AU_4' in ann_f else np.zeros(len(self.subject_names))
                 self.au6 = ann_f['label_AU_6'][:][valid_ann_mask] if 'label_AU_6' in ann_f else np.zeros(len(self.subject_names))
                 self.au7 = ann_f['label_AU_7'][:][valid_ann_mask] if 'label_AU_7' in ann_f else np.zeros(len(self.subject_names))
                 self.au9 = ann_f['label_AU_9'][:][valid_ann_mask] if 'label_AU_9' in ann_f else np.zeros(len(self.subject_names))
                 self.au10 = ann_f['label_AU_10'][:][valid_ann_mask] if 'label_AU_10' in ann_f else np.zeros(len(self.subject_names))
                 self.au43 = ann_f['label_AU_43'][:][valid_ann_mask] if 'label_AU_43' in ann_f else np.zeros(len(self.subject_names))
-                
-                # Load PSPI if available, otherwise calculate from AUs
+
                 if 'label_pspi' in ann_f:
                     self.pspi_scores = ann_f['label_pspi'][:][valid_ann_mask]
                 else:
-                    # Calculate PSPI: AU4 + max(AU6, AU7) + max(AU9, AU10) + AU43
+                    # PSPI = AU4 + max(AU6, AU7) + max(AU9, AU10) + AU43
                     self.pspi_scores = self._calculate_pspi_from_aus()
             else:
-                # No filtering needed
                 self.au4 = ann_f['label_AU_4'][:] if 'label_AU_4' in ann_f else np.zeros(len(self.indexes))
                 self.au6 = ann_f['label_AU_6'][:] if 'label_AU_6' in ann_f else np.zeros(len(self.indexes))
                 self.au7 = ann_f['label_AU_7'][:] if 'label_AU_7' in ann_f else np.zeros(len(self.indexes))
                 self.au9 = ann_f['label_AU_9'][:] if 'label_AU_9' in ann_f else np.zeros(len(self.indexes))
                 self.au10 = ann_f['label_AU_10'][:] if 'label_AU_10' in ann_f else np.zeros(len(self.indexes))
                 self.au43 = ann_f['label_AU_43'][:] if 'label_AU_43' in ann_f else np.zeros(len(self.indexes))
-                
+
                 # Load PSPI if available, otherwise calculate from AUs
                 if 'label_pspi' in ann_f:
                     self.pspi_scores = ann_f['label_pspi'][:]
                 else:
-                    # Calculate PSPI: AU4 + max(AU6, AU7) + max(AU9, AU10) + AU43
                     self.pspi_scores = self._calculate_pspi_from_aus()
-            
-            # Handle NaN values in AU annotations: replace with 0
+
             self.au4 = np.nan_to_num(self.au4, nan=0.0)
             self.au6 = np.nan_to_num(self.au6, nan=0.0)
             self.au7 = np.nan_to_num(self.au7, nan=0.0)
             self.au9 = np.nan_to_num(self.au9, nan=0.0)
             self.au10 = np.nan_to_num(self.au10, nan=0.0)
             self.au43 = np.nan_to_num(self.au43, nan=0.0)
-            
-            # Also handle NaN values in PSPI scores
             self.pspi_scores = np.nan_to_num(self.pspi_scores, nan=0.0)
-            
-            # If using neutral reference, build subject -> neutral indices map
+
             if self.use_neutral_reference:
                 self.subject_to_neutral_indices = {}
-                
-                # We need subject numbers for all indices
+
                 all_subject_numbers = []
                 for name in self.subject_names:
                     name_str = name.decode() if isinstance(name, bytes) else name
                     number = int(name_str.split('-')[0])
                     all_subject_numbers.append(number)
                 all_subject_numbers = np.array(all_subject_numbers)
-                
-                # Find indices where PSPI == 0
+
+                # Neutral frames are those with PSPI == 0
                 for idx, pspi in enumerate(self.pspi_scores):
                     if pspi == 0:
                         subj_num = all_subject_numbers[idx]
                         if subj_num not in self.subject_to_neutral_indices:
                             self.subject_to_neutral_indices[subj_num] = []
                         self.subject_to_neutral_indices[subj_num].append(idx)
-                
-                print(f"Built neutral reference map for {len(self.subject_to_neutral_indices)} subjects")
 
-            # Convert subject names to subject numbers for matching
             subject_numbers = []
             for name in self.subject_names:
                 name_str = name.decode() if isinstance(name, bytes) else name
@@ -196,7 +146,6 @@ class UNBCDataset(Dataset):
                 subject_numbers.append(number)
             subject_numbers = np.array(subject_numbers)
 
-            # Subject-based splitting
             if self.fold is not None:
                 if self.cv_protocol not in {"5fold", "loso"}:
                     raise ValueError(f"Invalid cv_protocol={self.cv_protocol!r}. Expected '5fold' or 'loso'.")
@@ -211,7 +160,7 @@ class UNBCDataset(Dataset):
                     val_subjects = set(folds_f[fold_key]['validation_subjects'][:])
                     train_subjects = set(folds_f[fold_key]['train_subjects'][:])
                 else:
-                    # LOSO: fold indexes subjects directly (typically 0-24)
+                    # LOSO: each fold holds out one subject (typically 0-24)
                     subject_ids = sorted(list(set(subject_numbers.tolist())))
                     n_subjects = len(subject_ids)
                     if n_subjects == 0:
@@ -228,71 +177,35 @@ class UNBCDataset(Dataset):
                     val_subjects = {held_out_subject}
                     train_subjects = set(subject_ids) - {held_out_subject}
 
-                inner_val_subjects = set()
-                inner_train_subjects = set(train_subjects)
-                if self.inner_validation == "validation":
-                    train_subjects_sorted = np.array(sorted(list(train_subjects)), dtype=np.int32)
-                    rng = np.random.default_rng(self.inner_val_split_seed + int(self.fold))
-                    rng.shuffle(train_subjects_sorted)
-
-                    n_train_subjects = len(train_subjects_sorted)
-                    if n_train_subjects <= 1:
-                        inner_val_subjects = set()
-                        inner_train_subjects = set(train_subjects_sorted.tolist())
-                    else:
-                        n_inner_val = int(round(n_train_subjects * float(self.inner_val_split_ratio)))
-                        n_inner_val = max(1, min(n_inner_val, n_train_subjects - 1))
-                        inner_val_subjects = set(train_subjects_sorted[:n_inner_val].tolist())
-                        inner_train_subjects = set(train_subjects_sorted[n_inner_val:].tolist())
-
                 self.valid_indices = []
                 if self.mode == 'train':
-                    target_subjects = inner_train_subjects
-                elif self.mode == 'val':
-                    if self.inner_validation == "validation":
-                        target_subjects = inner_val_subjects
-                    else:
-                        target_subjects = val_subjects
-                elif self.mode == 'test':
+                    target_subjects = train_subjects
+                elif self.mode in ('val', 'test'):
                     target_subjects = val_subjects
                 else:
-                    target_subjects = set(train_subjects).union(val_subjects)
+                    target_subjects = train_subjects | val_subjects
 
                 for subject_num in target_subjects:
                     subject_indices = np.where(subject_numbers == subject_num)[0]
                     self.valid_indices.extend(subject_indices)
                 self.valid_indices = np.array(sorted(self.valid_indices))
 
-                unique_subjects_in_split = np.unique(subject_numbers[self.valid_indices])
-                print(
-                    f"Subjects in {self.mode} split ({self.cv_protocol}): "
-                    f"{sorted(unique_subjects_in_split)} ({len(unique_subjects_in_split)} subjects)"
-                )
             else:
                 self.valid_indices = np.arange(len(self.indexes))
-        
-        print(f"Loaded {len(self.valid_indices)} samples for {self.mode} mode")
-        if len(self.valid_indices) > 0:
-            print(f"PSPI score range: {self.pspi_scores[self.valid_indices].min():.2f} - {self.pspi_scores[self.valid_indices].max():.2f}")
-        else:
-            print("Warning: No valid indices found for this split")
-        
+
     def _calculate_pspi_from_aus(self):
-        """Calculate PSPI scores from AU intensities"""
+        """Calculate PSPI = AU4 + max(AU6, AU7) + max(AU9, AU10) + AU43."""
         def safe_max(*arrays):
-            """Safely compute max, handling NaN values"""
             stacked = np.stack(arrays, axis=-1)
             with np.warnings.catch_warnings():
                 np.warnings.simplefilter("ignore", category=RuntimeWarning)
                 result = np.nanmax(stacked, axis=-1)
             return np.nan_to_num(result, nan=0.0)
-        
+
         def safe_val(array):
-            """Replace NaN with 0"""
             return np.nan_to_num(array, nan=0.0)
-        
+
         def safe_nanmax(val):
-            """Safely compute nanmax, suppressing warnings for all-NaN arrays"""
             if hasattr(val, '__iter__'):
                 if np.all(np.isnan(val)):
                     return 0.0
@@ -302,56 +215,44 @@ class UNBCDataset(Dataset):
                 return safe_val(result)
             else:
                 return safe_val(val)
-        
-        # Get max values across sequences for each AU
+
         au4_max = np.array([safe_nanmax(self.au4[idx]) for idx in range(len(self.au4))])
         au6_max = np.array([safe_nanmax(self.au6[idx]) for idx in range(len(self.au6))])
         au7_max = np.array([safe_nanmax(self.au7[idx]) for idx in range(len(self.au7))])
         au9_max = np.array([safe_nanmax(self.au9[idx]) for idx in range(len(self.au9))])
         au10_max = np.array([safe_nanmax(self.au10[idx]) for idx in range(len(self.au10))])
         au43_max = np.array([safe_nanmax(self.au43[idx]) for idx in range(len(self.au43))])
-        
-        # Calculate PSPI: AU4 + max(AU6, AU7) + max(AU9, AU10) + AU43
-        pspi = (au4_max + 
-                safe_max(au6_max, au7_max) + 
-                safe_max(au9_max, au10_max) + 
+
+        pspi = (au4_max +
+                safe_max(au6_max, au7_max) +
+                safe_max(au9_max, au10_max) +
                 au43_max)
-        
+
         return pspi
-    
+
     def __len__(self):
         return len(self.valid_indices)
-    
+
     def __getitem__(self, idx):
         actual_idx = self.valid_indices[idx]
-        
-        # Load image
+
         with h5py.File(self.frames_file, 'r') as f:
-            # Get image data
-            image_data = f['image'][actual_idx]  # Shape: (H, W, C)
-            
-            # Convert to PIL Image
+            image_data = f['image'][actual_idx]  # (H, W, C)
             if len(image_data.shape) == 3:
                 image = Image.fromarray(image_data.astype(np.uint8))
             else:
-                # Handle grayscale
                 image = Image.fromarray(image_data.astype(np.uint8)).convert('RGB')
 
-        # Keep an untransformed copy for neutral-reference fallback
+        # Keep untransformed copy for neutral-reference fallback
         image_pil = image
-        
-        # Get PSPI score
         pspi_score = float(self.pspi_scores[actual_idx])
-        
-        # Get AU features if requested
+
         au_features = None
         if self.return_aus:
-            # Get AU values (use max over sequence if available) - following reference implementation
             def get_au_val(au_array, idx):
                 """Get AU value, handling NaN and returning continuous float."""
                 val = au_array[idx]
                 if hasattr(val, '__iter__'):
-                    # Check if all values are NaN before calling nanmax to avoid warning
                     if np.all(np.isnan(val)):
                         return 0.0
                     max_val = np.nanmax(val)
@@ -359,59 +260,48 @@ class UNBCDataset(Dataset):
                         return 0.0
                     return float(max_val)
                 else:
-                    # Single value
                     return 0.0 if np.isnan(val) else float(val)
-            
-            # Following reference implementation: return continuous AU values, not discrete classes
+
+            # Return continuous AU values (not discrete classes), following reference implementation
             au4_val = get_au_val(self.au4, actual_idx)
-            au6_val = get_au_val(self.au6, actual_idx) 
+            au6_val = get_au_val(self.au6, actual_idx)
             au7_val = get_au_val(self.au7, actual_idx)
             au9_val = get_au_val(self.au9, actual_idx)
             au10_val = get_au_val(self.au10, actual_idx)
             au43_val = get_au_val(self.au43, actual_idx)
-            # For binary metrics, binarize AU43: 1 if > 0, else 0
-            au43_bin = 1.0 if au43_val > 0 else 0.0
-            # Following reference: use max(AU6, AU7) and max(AU9, AU10) for PSPI calculation
-            # But keep individual AUs for the AU vector (with binarized AU43)
+            au43_bin = 1.0 if au43_val > 0 else 0.0  # AU43 is binarized
+
             au_features = np.array([
-                au4_val,        # AU4
-                au6_val,        # AU6 
-                au7_val,        # AU7
-                au9_val,        # AU9
-                au10_val,       # AU10
-                au43_bin,       # AU43 (binarized)
+                au4_val, au6_val, au7_val, au9_val, au10_val, au43_bin
             ], dtype=np.float32)
-        
-        # Apply transforms
+
         if self.transform:
             image = self.transform(image)
         else:
-            # Default preprocessing
             transform = transforms.Compose([
                 transforms.Resize((self.image_size, self.image_size)),
                 transforms.ToTensor(),
                 transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
             ])
             image = transform(image)
-        
+
         sample = {
             'image': image,
             'pspi_score': torch.tensor(pspi_score, dtype=torch.float32),
             'image_path': f"unbc_frame_{actual_idx}",
             'base_name': f"unbc_{actual_idx}",
         }
-        
+
         if au_features is not None:
             sample['au_vector'] = torch.tensor(au_features, dtype=torch.float32)
-            
+
         if self.use_neutral_reference:
-            # Identify subject of current image
             name = self.subject_names[actual_idx]
             name_str = name.decode() if isinstance(name, bytes) else name
             subject_num = int(name_str.split('-')[0])
-            
+
             neutral_indices = self.subject_to_neutral_indices.get(subject_num, [])
-            
+
             n_shots = max(1, int(self.multi_shot_inference))
             neutral_pils = []
             if neutral_indices:
@@ -426,10 +316,9 @@ class UNBCDataset(Dataset):
                             neutral_pils.append(Image.fromarray(neutral_image_data.astype(np.uint8)).convert('RGB'))
 
             if not neutral_pils:
-                # Fallback: use current image
+                # Fallback: use current image as neutral
                 neutral_pils = [image_pil.copy() for _ in range(n_shots)]
 
-            # Apply transforms to neutral image(s)
             if self.transform:
                 neutral_tensors = [self.transform(im) for im in neutral_pils]
             else:
@@ -446,38 +335,34 @@ class UNBCDataset(Dataset):
                 sample['neutral_image'] = torch.stack(neutral_tensors, dim=0)
 
         return sample
-    
+
     def get_au_names(self):
-        """Return the names of AUs used as features."""
         return ['AU4', 'AU6', 'AU7', 'AU9', 'AU10', 'AU43']
-    
+
     def get_subject_info(self):
-        """Return information about subjects in the current split."""
         if not hasattr(self, 'subject_names') or not hasattr(self, 'valid_indices'):
             return {"message": "Subject information not available"}
-        
-        # Get subject numbers for valid indices
+
         subject_numbers = []
         for idx in self.valid_indices:
             name = self.subject_names[idx]
             name_str = name.decode() if isinstance(name, bytes) else name
             number = int(name_str.split('-')[0])
             subject_numbers.append(number)
-        
+
         unique_subjects = sorted(list(set(subject_numbers)))
         subject_counts = {}
         for subj in unique_subjects:
             subject_counts[subj] = subject_numbers.count(subj)
-        
+
         return {
             'total_subjects': len(unique_subjects),
             'subject_ids': unique_subjects,
             'subject_frame_counts': subject_counts,
             'total_frames': len(self.valid_indices)
         }
-    
+
     def get_pspi_statistics(self):
-        """Get statistics about PSPI scores in the dataset."""
         valid_scores = self.pspi_scores[self.valid_indices]
         return {
             'min': float(valid_scores.min()),
@@ -486,72 +371,24 @@ class UNBCDataset(Dataset):
             'std': float(valid_scores.std()),
             'count': len(valid_scores)
         }
-    
-    def check_au_data_quality(self):
-        """Check for NaN values and data quality in AU features."""
-        if not self.return_aus:
-            return {"message": "AU features not loaded"}
-        
-        au_arrays = [self.au4, self.au6, self.au7, self.au9, self.au10, self.au43]
-        au_names = ['AU4', 'AU6', 'AU7', 'AU9', 'AU10', 'AU43']
-        
-        quality_report = {}
-        total_valid_samples = len(self.valid_indices)
-        
-        for i, (au_array, au_name) in enumerate(zip(au_arrays, au_names)):
-            valid_au_data = au_array[self.valid_indices]
-            
-            # Count samples with all NaN values
-            all_nan_count = 0
-            some_nan_count = 0
-            valid_count = 0
-            
-            for sample in valid_au_data:
-                if hasattr(sample, '__iter__'):
-                    # Sequence data
-                    if np.all(np.isnan(sample)):
-                        all_nan_count += 1
-                    elif np.any(np.isnan(sample)):
-                        some_nan_count += 1
-                    else:
-                        valid_count += 1
-                else:
-                    # Single value
-                    if np.isnan(sample):
-                        all_nan_count += 1
-                    else:
-                        valid_count += 1
-            
-            quality_report[au_name] = {
-                'total_samples': total_valid_samples,
-                'all_nan_samples': all_nan_count,
-                'some_nan_samples': some_nan_count, 
-                'valid_samples': valid_count,
-                'nan_percentage': (all_nan_count / total_valid_samples) * 100
-            }
-        
-        return quality_report
 
 
 class UNBCDataModule(pl.LightningDataModule):
-    """
-    PyTorch Lightning DataModule for UNBC-McMaster dataset
-    """
-    
+    """PyTorch Lightning DataModule for UNBC-McMaster dataset."""
+
     def __init__(
         self,
         data_dir="datasets/UNBC-McMaster",
         batch_size=32,
         num_workers=4,
         image_size=160,
-        fold=0,  # LOSO-CV fold
+        fold=0,
         cv_protocol="5fold",
         return_aus=True,
         pin_memory=True,
         use_neutral_reference=False,
         multi_shot_inference=1,
         use_weighted_sampling=False,
-        inner_validation="last_epoch",
     ):
         super().__init__()
         self.data_dir = data_dir
@@ -565,9 +402,7 @@ class UNBCDataModule(pl.LightningDataModule):
         self.use_neutral_reference = use_neutral_reference
         self.multi_shot_inference = int(multi_shot_inference) if multi_shot_inference is not None else 1
         self.use_weighted_sampling = use_weighted_sampling
-        self.inner_validation = inner_validation
-        
-        # Define transforms
+
         self.train_transform = transforms.Compose([
             transforms.Resize((image_size, image_size)),
             transforms.RandomHorizontalFlip(p=0.3),
@@ -576,15 +411,14 @@ class UNBCDataModule(pl.LightningDataModule):
             transforms.ToTensor(),
             transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
         ])
-        
+
         self.val_test_transform = transforms.Compose([
             transforms.Resize((image_size, image_size)),
             transforms.ToTensor(),
             transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
         ])
-    
+
     def setup(self, stage=None):
-        """Setup datasets for training, validation, and testing."""
         if stage == "fit" or stage is None:
             self.train_dataset = UNBCDataset(
                 data_dir=self.data_dir,
@@ -596,9 +430,8 @@ class UNBCDataModule(pl.LightningDataModule):
                 image_size=self.image_size,
                 use_neutral_reference=self.use_neutral_reference,
                 multi_shot_inference=self.multi_shot_inference,
-                inner_validation=self.inner_validation,
             )
-            
+
             self.val_dataset = UNBCDataset(
                 data_dir=self.data_dir,
                 transform=self.val_test_transform,
@@ -609,9 +442,8 @@ class UNBCDataModule(pl.LightningDataModule):
                 image_size=self.image_size,
                 use_neutral_reference=self.use_neutral_reference,
                 multi_shot_inference=self.multi_shot_inference,
-                inner_validation=self.inner_validation,
             )
-        
+
         if stage == "test" or stage is None:
             self.test_dataset = UNBCDataset(
                 data_dir=self.data_dir,
@@ -623,32 +455,9 @@ class UNBCDataModule(pl.LightningDataModule):
                 image_size=self.image_size,
                 use_neutral_reference=self.use_neutral_reference,
                 multi_shot_inference=self.multi_shot_inference,
-                inner_validation=self.inner_validation,
             )
-        
-        # Print dataset statistics
-        if hasattr(self, 'train_dataset'):
-            fold_str = f"Fold {self.fold}" if self.fold is not None else "Entire Dataset"
-            print(f"\nUNBC Dataset Statistics ({fold_str}):")
-            print(f"Train set size: {len(self.train_dataset)}")
-            print(f"Val set size: {len(self.val_dataset) if hasattr(self, 'val_dataset') else 0}")
-            print(f"Test set size: {len(self.test_dataset) if hasattr(self, 'test_dataset') else 0}")
-            
-            # Print subject information
-            train_subjects = self.train_dataset.get_subject_info()
-            print(f"Train subjects: {train_subjects['subject_ids']} ({train_subjects['total_subjects']} subjects)")
-            
-            if hasattr(self, 'val_dataset'):
-                val_subjects = self.val_dataset.get_subject_info()
-                print(f"Val subjects: {val_subjects['subject_ids']} ({val_subjects['total_subjects']} subjects)")
-            
-            stats = self.train_dataset.get_pspi_statistics()
-            print(f"PSPI range: [{stats['min']:.1f}, {stats['max']:.1f}]")
-            print(f"PSPI mean: {stats['mean']:.2f} ± {stats['std']:.2f}")
-            print(f"AU features: {self.train_dataset.get_au_names()}")
-    
+
     def train_dataloader(self):
-        # Use weighted sampling to handle class imbalance if requested
         if not self.use_weighted_sampling:
             return DataLoader(
                 self.train_dataset,
@@ -661,29 +470,23 @@ class UNBCDataModule(pl.LightningDataModule):
 
         dataset = self.train_dataset
         all_targets = []
-        
-        # Helper to extract targets
+
         def extract_targets(ds):
             if hasattr(ds, 'pspi_scores') and hasattr(ds, 'valid_indices'):
-                # UNBCDataset
-                return ds.pspi_scores[ds.valid_indices]
+                return ds.pspi_scores[ds.valid_indices]  # UNBCDataset
             elif hasattr(ds, 'data_pairs'):
-                # SyntheticFaceDataset
-                return [pair[1].get('pspi', 0) for pair in ds.data_pairs]
+                return [pair[1].get('pspi', 0) for pair in ds.data_pairs]  # Pain3DDataset
             elif hasattr(ds, 'dataset'):
-                # Wrapper (e.g. TransformWrapper)
-                return extract_targets(ds.dataset)
+                return extract_targets(ds.dataset)  # TransformWrapper
             return None
 
-        # Handle ConcatDataset
         if isinstance(dataset, torch.utils.data.ConcatDataset):
             for ds in dataset.datasets:
                 targets = extract_targets(ds)
                 if targets is not None:
                     all_targets.extend(targets)
                 else:
-                    # Fallback: if we can't get targets, we can't use weighted sampling easily
-                    print("Warning: Could not extract targets for weighted sampling. Using random shuffle.")
+                    # Can't extract targets; fall back to random shuffle
                     return DataLoader(
                         self.train_dataset,
                         batch_size=self.batch_size,
@@ -696,23 +499,15 @@ class UNBCDataModule(pl.LightningDataModule):
             targets = extract_targets(dataset)
             if targets is not None:
                 all_targets.extend(targets)
-        
+
         if len(all_targets) > 0:
-            # Use a simple binary weighting scheme like the reference code:
-            #   - no pain (PSPI < 1):  weight = 1.0
-            #   - pain    (PSPI >= 1): weight = 2.0
-            # This replaces inverse-frequency weights, which can be overly aggressive.
+            # Simple binary weighting: pain (PSPI >= 1) gets 2x weight
             all_targets = np.array(all_targets, dtype=np.float32)
             weights = np.where(all_targets >= 1.0, 2.0, 1.0).astype(np.float64)
 
             weights = torch.DoubleTensor(weights)
             sampler = torch.utils.data.WeightedRandomSampler(weights, len(weights))
 
-            print(
-                "Using WeightedRandomSampler with fixed pain weight (PSPI>=1 -> 2.0, else 1.0) "
-                f"(samples: {len(weights)})"
-            )
-            
             return DataLoader(
                 self.train_dataset,
                 batch_size=self.batch_size,
@@ -721,7 +516,7 @@ class UNBCDataModule(pl.LightningDataModule):
                 pin_memory=self.pin_memory,
                 drop_last=True
             )
-            
+
         return DataLoader(
             self.train_dataset,
             batch_size=self.batch_size,
@@ -730,7 +525,7 @@ class UNBCDataModule(pl.LightningDataModule):
             pin_memory=self.pin_memory,
             drop_last=True
         )
-    
+
     def val_dataloader(self):
         return DataLoader(
             self.val_dataset,
@@ -739,7 +534,7 @@ class UNBCDataModule(pl.LightningDataModule):
             num_workers=self.num_workers,
             pin_memory=self.pin_memory
         )
-    
+
     def test_dataloader(self):
         return DataLoader(
             self.test_dataset,

@@ -6,6 +6,7 @@ torchmetrics>=0.11.0
 
 # Data handling
 numpy>=1.24.0
+scipy>=1.10.0
 h5py>=3.8.0
 pillow>=9.5.0
 
@@ -13,17 +14,7 @@ pillow>=9.5.0
 wandb>=0.15.0
 
 # Model architectures
-transformers>=4.30.0
 timm>=0.9.0
 
-# Optional: LoRA fine-tuning
+# LoRA fine-tuning (pulls in transformers, accelerate, etc.)
 peft>=0.4.0
-
-# Visualization (optional)
-matplotlib>=3.7.0
-
-# Scientific computing
-scikit-learn>=1.2.0
-
-# Progress bars
-tqdm>=4.65.0

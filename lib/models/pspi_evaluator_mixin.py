@@ -12,11 +12,11 @@ import torchmetrics
 
 class PSPIEvaluatorMixin:
     """
-    Mixin class providing evaluation and logging functionality for PSPI regression models.
+    Mixin providing evaluation and logging for PSPI regression models.
 
     Metrics tracked per stage (train / val / test / test_unbc / last_epoch_test):
-      Regression  – MAE, Pearson Correlation
-      Binary cls  – F1, Accuracy, AUROC, Macro AUROC  (pain vs. no-pain, threshold=2)
+      Regression  -- MAE, Pearson Correlation
+      Binary cls  -- F1, Accuracy, AUROC, Macro AUROC  (pain vs. no-pain, threshold=2)
     """
 
     # ------------------------------------------------------------------ #
@@ -24,34 +24,21 @@ class PSPIEvaluatorMixin:
     # ------------------------------------------------------------------ #
 
     def _denormalize_pspi(self, normalized_values, pspi_max=16.0):
-        """Denormalize model outputs from [0, 1] to [0, pspi_max]."""
         return normalized_values * pspi_max
 
     def _normalize_pspi(self, pspi_values, pspi_max=16.0):
-        """Normalize PSPI values from [0, pspi_max] to [0, 1]."""
         return pspi_values / pspi_max
 
     def _ensure_denormalized(self, pspi_values, pspi_max=16.0):
-        """Ensure PSPI values are in denormalized [0, pspi_max] range."""
         if torch.all(pspi_values <= 1.1):
             return self._denormalize_pspi(pspi_values, pspi_max)
         return pspi_values
 
     def _pspi_to_binary(self, pspi_values, threshold=2.0):
-        """Convert denormalized PSPI to binary (pain / no-pain) using threshold."""
         return (pspi_values >= threshold).long()
 
     def _calculate_pspi_from_au(self, au_preds):
-        """
-        Calculate PSPI from AU predictions using the standard formula.
-        Formula: PSPI = AU4 + max(AU6, AU7) + max(AU9, AU10) + AU43
-
-        Args:
-            au_preds: Tensor [batch_size, 6] – AU predictions
-
-        Returns:
-            pspi_from_au: Tensor [batch_size]
-        """
+        """PSPI = AU4 + max(AU6, AU7) + max(AU9, AU10) + AU43"""
         pspi_from_au = (
             au_preds[:, 0]
             + torch.max(au_preds[:, 1], au_preds[:, 2])
@@ -65,11 +52,9 @@ class PSPIEvaluatorMixin:
     # ------------------------------------------------------------------ #
 
     def _init_pspi_metrics(self):
-        """Create torchmetrics objects for every stage."""
         stages = ["train", "val", "test", "last_epoch_test", "test_unbc"]
 
         for stage in stages:
-            # Regression
             setattr(self, f"{stage}_mae", torchmetrics.MeanAbsoluteError())
             setattr(self, f"{stage}_corr", torchmetrics.PearsonCorrCoef())
 
@@ -79,11 +64,11 @@ class PSPIEvaluatorMixin:
             setattr(self, f"{stage}_binary_auroc", torchmetrics.AUROC(task="binary"))
             setattr(self, f"{stage}_binary_macro_auroc", torchmetrics.AUROC(task="binary"))
 
-            # AU-derived PSPI (for comparison)
+            # AU-derived PSPI (for comparison with direct head)
             setattr(self, f"{stage}_pspi_au_mae", torchmetrics.MeanAbsoluteError())
             setattr(self, f"{stage}_pspi_au_corr", torchmetrics.PearsonCorrCoef())
 
-        # Per-stage prediction / target storage (for DDP gathering at epoch-end)
+        # Per-stage prediction/target storage for DDP gathering at epoch-end
         for stage in stages:
             setattr(self, f"{stage}_preds", [])
             setattr(self, f"{stage}_targets", [])
@@ -96,47 +81,28 @@ class PSPIEvaluatorMixin:
         self, pspi_pred, pspi_target, au_preds, au_target, pspi_from_au, stage,
         pspi_max=16.0, targets_already_denormalized=False,
     ):
-        """
-        Update all metrics for a single batch.
-
-        Args:
-            pspi_pred: PSPI predictions [B] in [0, 1]
-            pspi_target: PSPI targets [B]
-            au_preds: AU predictions [B, 6]
-            au_target: AU targets [B, 6]
-            pspi_from_au: PSPI derived from AUs [B]
-            stage: one of train / val / test / last_epoch_test / test_unbc
-            pspi_max: scale factor (default 16)
-            targets_already_denormalized: skip auto-detection if True
-        """
-        # Denormalize predictions
         pspi_pred_denorm = self._denormalize_pspi(pspi_pred, pspi_max)
 
-        # Ensure targets are denormalized
         if targets_already_denormalized:
             pspi_target_denorm = pspi_target
         else:
             pspi_target_denorm = self._ensure_denormalized(pspi_target, pspi_max)
 
-        # Store for epoch-end DDP gathering
         getattr(self, f"{stage}_preds").append(pspi_pred_denorm.detach().cpu())
         getattr(self, f"{stage}_targets").append(pspi_target_denorm.detach().cpu())
 
-        # -- Regression --
         getattr(self, f"{stage}_mae")(pspi_pred_denorm, pspi_target_denorm)
         getattr(self, f"{stage}_corr")(pspi_pred_denorm, pspi_target_denorm)
 
-        # -- Binary classification (threshold = 2) --
         pred_binary = self._pspi_to_binary(pspi_pred_denorm, threshold=2.0)
         target_binary = self._pspi_to_binary(pspi_target_denorm, threshold=2.0)
 
         getattr(self, f"{stage}_binary_f1")(pred_binary, target_binary)
         getattr(self, f"{stage}_binary_acc")(pred_binary, target_binary)
-        # AUROC / Macro AUROC use continuous scores
+        # AUROC uses continuous scores rather than binary predictions
         getattr(self, f"{stage}_binary_auroc")(pspi_pred_denorm, target_binary)
         getattr(self, f"{stage}_binary_macro_auroc")(pspi_pred_denorm, target_binary)
 
-        # -- AU-derived PSPI --
         getattr(self, f"{stage}_pspi_au_mae")(pspi_from_au, pspi_target_denorm)
         getattr(self, f"{stage}_pspi_au_corr")(pspi_from_au, pspi_target_denorm)
 
@@ -148,7 +114,6 @@ class PSPIEvaluatorMixin:
         self, stage, batch_size, total_loss, pspi_loss, au_loss,
         batch_idx=0, pspi_pred=None, pspi_target=None,
     ):
-        """Log losses to PL logger."""
         self.log(f"{stage}/loss/total", total_loss, prog_bar=True,
                  on_step=(stage == "train"), on_epoch=True, sync_dist=True, batch_size=batch_size)
         self.log(f"{stage}/loss/pspi", pspi_loss,
@@ -161,7 +126,6 @@ class PSPIEvaluatorMixin:
     # ------------------------------------------------------------------ #
 
     def _compute_epoch_end_metrics(self, stage, batch_size, pspi_max=16.0):
-        """Gather predictions across DDP ranks, compute & log epoch-end metrics."""
         preds_list = getattr(self, f"{stage}_preds")
         targets_list = getattr(self, f"{stage}_targets")
 
@@ -171,22 +135,17 @@ class PSPIEvaluatorMixin:
         preds = torch.cat(preds_list, dim=0)
         targets = torch.cat(targets_list, dim=0)
 
-        # DDP gathering
         if self.trainer.world_size > 1:
             device = self.device
             preds = self.all_gather(preds.to(device)).view(-1).cpu()
             targets = self.all_gather(targets.to(device)).view(-1).cpu()
 
-        # Compute and log all torchmetrics
         self._compute_and_log_torchmetrics(stage, self.device, batch_size)
 
-        # Clear storage
         preds_list.clear()
         targets_list.clear()
 
     def _compute_and_log_torchmetrics(self, stage, device, batch_size):
-        """Compute every registered metric, log it, and reset."""
-
         def _safe(metric_obj):
             try:
                 v = metric_obj.compute()
@@ -200,7 +159,6 @@ class PSPIEvaluatorMixin:
                 metric_obj.reset()
                 return torch.tensor(0.0, dtype=torch.float32, device=device)
 
-        # --- Regression ---
         mae_val = _safe(getattr(self, f"{stage}_mae"))
         corr_val = _safe(getattr(self, f"{stage}_corr"))
 
@@ -218,7 +176,6 @@ class PSPIEvaluatorMixin:
         self.log(f"{stage}_regression_corr", corr_val, logger=False,
                  on_step=False, on_epoch=True, sync_dist=True, batch_size=batch_size)
 
-        # --- Binary classification ---
         f1_val = _safe(getattr(self, f"{stage}_binary_f1"))
         acc_val = _safe(getattr(self, f"{stage}_binary_acc"))
         auroc_val = _safe(getattr(self, f"{stage}_binary_auroc"))
@@ -233,7 +190,6 @@ class PSPIEvaluatorMixin:
         self.log(f"{stage}/binary/macro_auroc", macro_auroc_val,
                  on_step=False, on_epoch=True, sync_dist=True, batch_size=batch_size)
 
-        # --- AU-derived PSPI ---
         pspi_au_mae = _safe(getattr(self, f"{stage}_pspi_au_mae"))
         pspi_au_corr = _safe(getattr(self, f"{stage}_pspi_au_corr"))
 
