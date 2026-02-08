@@ -1,101 +1,247 @@
 # Pain in 3D: Generating Controllable Synthetic Faces for Automated Pain Assessment
 
-[![arXiv](https://img.shields.io/badge/arXiv-2509.16727-b31b1b.svg)](https://arxiv.org/abs/2509.16727)
-[![Hugging Face](https://img.shields.io/badge/%F0%9F%A4%97%20Hugging%20Face-Dataset-blue)](https://huggingface.co/datasets/SoroushMehraban/3D-Pain)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-This repository contains the official implementation and dataset for the paper **"Pain in 3D: Generating Controllable Synthetic Faces for Automated Pain Assessment"**.
+A clean implementation for automated pain assessment using vision transformers. This codebase supports training on both synthetic 3D pain face datasets and the UNBC-McMaster Shoulder Pain Expression Archive.
 
-## 📄 Abstract
+## 📄 Overview
 
-Automated pain assessment from facial expressions is crucial for non-communicative patients but has been limited by data scarcity and ethical constraints. We present **3DPain**, a large-scale synthetic dataset designed to address the scarcity and demographic imbalance in automated pain assessment. 
+This implementation provides tools for automated pain assessment through:
+- Reference-guided Vision Transformers (ViTPain) for pain intensity estimation
+- Multi-task learning combining PSPI regression and Action Unit prediction
+- Support for both synthetic and real-world pain datasets
+- Comprehensive evaluation metrics including regression, classification, and correlation measures
 
-The dataset features **82,500 samples across 2,500 synthetic identities**, generated using a novel three-stage framework that ensures precise control over facial action units (AUs), facial structure, and clinically validated pain levels (PSPI).
+## 🖼️ Visual Overview
 
-Key features include:
-* **Size:** 82,500 images across 2,500 synthetic identities.
-* **Diversity:** Balanced representation across age, gender, and ethnicity.
-* **Annotations:** Exact AU configurations, PSPI scores, and paired neutral references for every pain expression.
+### Synthetic 3D Pain Face Generation
+![Data Generation Pipeline](figures/data_generation.png)
+*Controllable 3D pain face synthesis using parametric facial models with AU-based deformations*
 
-We also introduce **ViTPain**, a reference-based Vision Transformer framework. Unlike standard baselines, ViTPain leverages **cross-attention with a neutral reference face** to explicitly disentangle dynamic pain expressions from static identity features, significantly improving estimation accuracy.
+### Dataset Samples
+![Sample Pain Faces](figures/samples.png)
+*Examples of synthetic pain faces with varying PSPI intensities and Action Unit combinations*
 
-## 💾 Dataset
+### Model Architecture
+![ViTPain Architecture](figures/architecture.png)
+*Reference-guided Vision Transformer with DinoV3 backbone, LoRA adapters, and AU query head for pain assessment*
 
-The dataset is hosted on Hugging Face: [**SoroushMehraban/3D-Pain**](https://huggingface.co/datasets/SoroushMehraban/3D-Pain)
+## 📋 Table of Contents
 
-### Directory Structure
-The dataset is organized into four main directories:
+- [Visual Overview](#visual-overview)
+- [Installation](#installation)
+- [Dataset Setup](#dataset-setup)
+- [Training](#training)
+- [Model Architecture](#model-architecture)
+- [Project Structure](#project-structure)
+- [Citation](#citation)
 
-    3D-Pain/
-    ├── heatmaps/           # 25k colorized pain-region heatmaps
-    │   ├── README.txt
-    │   ├── heatmaps_00000.tar.gz
-    │   └── ...
-    ├── textured_meshes/    # 2.5k textured FLAME meshes
-    │   ├── README.txt
-    │   ├── meshes_00000.tar.gz
-    │   └── ...
-    ├── images/             # 82.5k Multi-view images
-    │   │                   # (27.5k sets: Neutral + Pain in 3 views)
-    │   ├── README.txt
-    │   ├── images_00000.tar.gz
-    │   └── ...
-    └── annotations/        # 25k JSON annotations (AUs, PSPI scores)
-        ├── README.txt
-        ├── annotations_00000.tar.gz
-        └── ...
+## 🚀 Installation
 
-### Annotations Format
-Each annotation JSON contains:
-- **AUs:** Intensity of specific Action Units (e.g., AU4, AU6, AU7, AU9, AU10, AU43).
-- **PSPI:** The calculated Prkachin and Solomon Pain Intensity score.
+### 1. Create a virtual environment (recommended)
 
-## 🚀 Usage
+```bash
+python -m venv pain_env
+source pain_env/bin/activate  # On Windows: pain_env\Scripts\activate
+```
 
-### 1. Downloading the Data
-You can download the dataset using the `huggingface_hub` python library or via git.
+### 2. Install dependencies
 
-**Using Python:**
+```bash
+pip install -r requirements.txt
+```
 
-    from datasets import load_dataset
+### Key Dependencies:
+- PyTorch >= 2.0.0
+- PyTorch Lightning >= 2.0.0
+- Transformers (for ViT models)
+- timm (for DinoV3 models)
+- wandb (for experiment tracking)
 
-    dataset = load_dataset("SoroushMehraban/3D-Pain")
+## 💾 Dataset Setup
 
-**Using Git:**
+The code expects datasets to be organized in a `datasets/` directory at the project root:
 
-    git lfs install
-    git clone https://huggingface.co/datasets/SoroushMehraban/3D-Pain
+```
+PainGeneration_clean/
+├── datasets/
+│   ├── UNBC-McMaster/          # UNBC-McMaster dataset
+│   │   ├── frames_unbc_2020-09-21-05-42-04.hdf5
+│   │   ├── annotations_unbc_2020-10-13-22-55-04.hdf5
+│   │   └── UNBC_CVFolds_2019-05-16-15-16-36.hdf5
+│   └── pain_faces/              # Synthetic 3D pain faces
+│       ├── meshes_inpainted/    # RGB images
+│       └── annotations/         # JSON annotations
+├── data/
+├── lib/
+├── scripts/
+└── ...
+```
 
-### 2. Training (ViTPain)
-To train the Vision Transformer baseline (ViTPain) described in the paper:
+### Download UNBC-McMaster Dataset
 
-    python train.py --config configs/vit_pain.yaml --batch_size 32
+The UNBC-McMaster Shoulder Pain Expression Archive Dataset should be obtained from the official source and converted to HDF5 format with the following files:
+- `frames_unbc_2020-09-21-05-42-04.hdf5` - Face image frames
+- `annotations_unbc_2020-10-13-22-55-04.hdf5` - AU annotations and PSPI scores
+- `UNBC_CVFolds_2019-05-16-15-16-36.hdf5` - Cross-validation fold splits
 
-## 🧠 Methodology
+### Download Synthetic Dataset
 
-### 1. 3DPain Generation Pipeline
-Our generation pipeline consists of three stages:
-1.  **3D Mesh Generation:** Utilizing the FLAME model to create geometrically diverse and anatomically plausible neutral face meshes.
-2.  **Texture Synthesis:** Applying diffusion-based texturing to ensure photorealistic skin details and demographic diversity.
-3.  **Neural Face Rigging:** Deforming the meshes using specific Action Unit (AU) parameters to simulate clinically grounded pain expressions, followed by multi-view rendering.
+The 3D Pain synthetic dataset is available on Hugging Face:
 
-### 2. ViTPain Architecture
-ViTPain is a **reference-based Vision Transformer** designed to improve generalization. 
-* **Input:** It takes pairs of images—a target "pain" face and its corresponding "neutral" reference face.
-* **Mechanism:** It uses a cross-attention mechanism to query the neutral face features, allowing the model to subtract identity-specific information and focus purely on the deformations caused by pain.
-* **Outcome:** This approach yields higher performance on PSPI regression and pain classification compared to standard single-frame baselines.
+```bash
+# Using git-lfs
+git lfs install
+git clone https://huggingface.co/datasets/SoroushMehraban/3D-Pain datasets/pain_faces
+
+# Or using the Hugging Face datasets library
+python -c "from datasets import load_dataset; load_dataset('SoroushMehraban/3D-Pain')"
+```
+
+## 🎓 Training
+
+### Train on Synthetic Dataset (ViTPain)
+
+Train the ViTPain model on synthetic 3D pain faces (DinoV3 + LoRA + AU query head enabled by default):
+
+```bash
+python train_vitpain.py \
+    --data_dir datasets/pain_faces \
+    --model_size large_dinov3 \
+    --batch_size 32 \
+    --max_epochs 100 \
+    --output_dir experiment/vitpain \
+    --wandb_project vitpain-training
+```
+
+### Train on UNBC-McMaster (Single Fold)
+
+Train on a single fold of UNBC-McMaster (DinoV3 + LoRA + AU query head enabled by default):
+
+```bash
+python train_unbc.py \
+    --data_dir datasets/UNBC-McMaster \
+    --model_size large_dinov3 \
+    --fold 0 \
+    --batch_size 32 \
+    --max_epochs 30 \
+    --output_dir experiment/unbc_fold0 \
+    --wandb_project unbc-training
+```
+
+### 5-Fold Cross-Validation on UNBC-McMaster
+
+Run complete 5-fold cross-validation:
+
+```bash
+python scripts/run_unbc_5fold_cv.py \
+    --data_dir datasets/UNBC-McMaster \
+    --model_size large_dinov3 \
+    --batch_size 100 \
+    --max_epochs 30 \
+    --output_dir experiment/unbc_5fold_cv \
+    --wandb_project unbc-5fold-cv
+```
+
+### Key Training Arguments
+
+#### Model Arguments:
+- `--model_size`: DinoV3 model size (default: `large_dinov3`)
+  - Options: `small_dinov3`, `base_dinov3`, `large_dinov3`
+- `--use_neutral_reference`: Use neutral reference images
+- `--lora_rank`: LoRA rank (default: 8)
+- `--lora_alpha`: LoRA alpha (default: 16)
+
+**Fixed Features (always enabled):**
+- DinoV3 backbone (always frozen)
+- LoRA adapters (only trainable parameters)
+- AU query head (cross-attention for AU prediction)
+- Binary classification head (pain/no-pain)
+
+#### Training Arguments:
+- `--batch_size`: Batch size per GPU (default: 32)
+- `--max_epochs`: Maximum training epochs (default: 100)
+
+
+#### Data Arguments:
+- `--data_dir`: Path to dataset directory
+- `--fold`: Cross-validation fold (0-4 for UNBC)
+- `--use_weighted_sampling`: Handle class imbalance
+
+#### Output Arguments:
+- `--output_dir`: Directory for checkpoints and logs
+- `--wandb_project`: Weights & Biases project name
+
+## 📁 Project Structure
+
+```
+PainGeneration_clean/
+├── data/                          # Data loaders
+│   ├── unbc_loader.py            # UNBC-McMaster dataset loader
+│   ├── synthetic_face_loader.py  # Synthetic dataset loader
+│   ├── split_utils.py            # Split utilities
+│   └── utils/
+│       └── threshold_calibration.py # Binary threshold calibration
+├── lib/                           # Library code
+│   ├── models/                   # Model definitions
+│   │   ├── pspi_vit_regressor.py    # ViTPain model
+│   │   └── pspi_evaluator_mixin.py  # Evaluation metrics
+│   └── utils/                    # Utility functions
+├── scripts/                       # Training scripts
+│   └── run_unbc_5fold_cv.py      # 5-fold cross-validation
+├── train_unbc.py                 # Train on UNBC-McMaster
+├── train_vitpain.py              # Train on synthetic data
+├── configs.py                    # Configuration management
+├── requirements.txt              # Python dependencies
+└── README.md                     # This file
+```
+
+## 🧠 Model Architecture
+
+### ViTPain
+
+ViTPain is a reference-based Vision Transformer designed for pain assessment:
+
+- **Backbone**: DinoV3 vision transformer (always enabled)
+- **Fine-tuning**: LoRA adapters for efficient training (always enabled)
+- **AU Query Head**: Cross-attention with learnable queries for AU prediction (always enabled)
+- **Input**: Target (pain) face + optional neutral reference face
+- **Outputs**: 
+  - PSPI score (0-16 regression)
+  - Action Unit intensities (AU4, AU6, AU7, AU9, AU10, AU43)
+
+### Key Features:
+1. **DinoV3 Backbone**: State-of-the-art vision features
+2. **LoRA Fine-tuning**: Memory-efficient training with adapters
+3. **AU Query Head**: Attention-based AU prediction
+4. **Multi-task Learning**: Joint prediction of PSPI and AUs
+5. **Multi-Shot Inference**: Ensemble predictions with multiple neutral references (optional)
+
+## 📊 Evaluation Metrics
+
+The code reports the following core metrics:
+
+### Regression Metrics:
+- Mean Absolute Error (MAE)
+- Pearson Correlation (Corr)
+
+### Classification Metrics:
+- Binary F1, Precision, Recall (pain vs. no-pain)
+- AUROC and AUPR
 
 ## 🔗 Citation
 
-If you use this dataset or code in your research, please cite our paper:
+If you use this code or the 3DPain dataset in your research, please cite:
 
-    @article{lin2025pain,
-      title={Pain in 3D: Generating Controllable Synthetic Faces for Automated Pain Assessment},
-      author={Lin, Xin Lei and Mehraban, Soroush and Moturu, Abhishek and Taati, Babak},
-      journal={arXiv preprint arXiv:2509.16727},
-      year={2025}
-    }
+```bibtex
+@article{lin2025pain,
+  title={Pain in 3D: Generating Controllable Synthetic Faces for Automated Pain Assessment},
+  author={Lin, Xin Lei and Mehraban, Soroush and Moturu, Abhishek and Taati, Babak},
+  journal={arXiv preprint arXiv:2509.16727},
+  year={2025}
+}
+```
 
 ## 📝 License
 
-This project is licensed under the **MIT License**.
+This project is licensed under the MIT License.

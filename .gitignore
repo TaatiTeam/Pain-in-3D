@@ -1,0 +1,5 @@
+# vscode junk
+__pycache__/
+
+# datasets
+datasets*
