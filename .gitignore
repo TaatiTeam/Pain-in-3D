@@ -9,3 +9,8 @@ pain_env/
 
 # testing files
 test_training.py
+
+# logs
+logs/
+wandb/
+experiment*

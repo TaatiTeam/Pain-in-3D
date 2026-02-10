@@ -14,6 +14,7 @@ torch.backends.cuda.matmul.allow_tf32 = True
 
 from data.unbc_loader import UNBCDataModule
 from lib.models import create_vitpain_model
+from lib.models.vitpain import load_pretrained_synthetic_data_model
 from configs import parse_args, config_to_dict
 
 
@@ -27,7 +28,7 @@ def train_unbc(cfg):
     fold_output_dir = os.path.join(cfg.output.output_dir, f"fold_{cfg.data.fold}")
     os.makedirs(fold_output_dir, exist_ok=True)
 
-    num_workers = min(8, os.cpu_count() or 1)
+    num_workers = min(4, os.cpu_count() or 1)
     data_module = UNBCDataModule(
         data_dir=cfg.data.data_dir,
         batch_size=cfg.training.batch_size,
@@ -43,7 +44,7 @@ def train_unbc(cfg):
     )
     data_module.setup()
 
-    model = create_vitpain_model(
+    model_kwargs = dict(
         model_size=cfg.model.model_size,
         learning_rate=cfg.training.learning_rate,
         weight_decay=cfg.training.weight_decay,
@@ -55,6 +56,15 @@ def train_unbc(cfg):
         use_neutral_reference=cfg.model.use_neutral_reference,
         dropout_rate=cfg.unbc.dropout_rate,
     )
+
+    if cfg.training.synthetic_pretrained_checkpoint:
+        print(f"Loading pretrained weights from: {cfg.training.synthetic_pretrained_checkpoint}")
+        model = load_pretrained_synthetic_data_model(
+            checkpoint_path=cfg.training.synthetic_pretrained_checkpoint,
+            **model_kwargs,
+        )
+    else:
+        model = create_vitpain_model(**model_kwargs)
 
     checkpoint_dir = os.path.join(fold_output_dir, "checkpoints")
     callbacks = [
@@ -95,7 +105,7 @@ def train_unbc(cfg):
         logger=logger,
         log_every_n_steps=cfg.training.log_every_n_steps,
         gradient_clip_val=1.0,
-        enable_progress_bar=False,
+        enable_progress_bar=True,
         enable_model_summary=True,
         check_val_every_n_epoch=1,
         num_sanity_val_steps=2,

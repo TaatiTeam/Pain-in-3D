@@ -402,7 +402,7 @@ class Pain3DDataModule(pl.LightningDataModule):
             num_workers=self.num_workers,
             pin_memory=True,
             persistent_workers=True if self.num_workers > 0 else False,
-            prefetch_factor=2 if self.num_workers > 0 else None,
+            prefetch_factor=4 if self.num_workers > 0 else None,
             drop_last=True
         )
 

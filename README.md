@@ -98,47 +98,74 @@ python -c "from datasets import load_dataset; load_dataset('SoroushMehraban/3D-P
 
 ## 🎓 Training
 
-### Train on Synthetic Dataset (ViTPain)
+Training follows a two-stage pipeline: (1) pretrain on synthetic 3DPain data, then (2) fine-tune on UNBC-McMaster using the pretrained checkpoint.
 
-Train the ViTPain model on synthetic 3D pain faces (DinoV3 + LoRA + AU query head enabled by default):
+### Stage 1: Pretrain on Synthetic 3DPain Dataset
+
+Pretrain the ViTPain model on synthetic 3D pain faces with a train/val/test split:
 
 ```bash
 python train_vitpain.py \
     --data_dir datasets/pain_faces \
+    --split_csv data/splits/uniform_data_70_20_10_split.csv \
     --model_size large_dinov3 \
-    --batch_size 32 \
+    --batch_size 48 \
     --max_epochs 100 \
-    --output_dir experiment/vitpain \
-    --wandb_project vitpain-training
+    --learning_rate 1e-4 \
+    --weight_decay 1e-1 \
+    --lora_rank 8 \
+    --lora_alpha 16 \
+    --log_every_n_steps 100 \
+    --output_dir experiment/vitpain_pretrain \
+    --wandb_project vitpain-pretrain
 ```
+
+The best checkpoint (lowest `val/regression/mae`) is saved to `experiment/vitpain_pretrain/checkpoints/`.
+
+### Stage 2: 5-Fold Cross-Validation on UNBC-McMaster
+
+Run 5-fold CV on UNBC using the pretrained checkpoint from Stage 1:
+
+```bash
+python scripts/run_unbc_5fold_cv.py \
+    --pretrained_checkpoint experiment/vitpain_pretrain/checkpoints/<best_checkpoint>.ckpt \
+    --data_dir datasets/UNBC-McMaster \
+    --model_size large_dinov3 \
+    --batch_size 100 \
+    --max_epochs 85 \
+    --use_weighted_sampling \
+    --lora_rank 8 \
+    --lora_alpha 16 \
+    --log_every_n_steps 10 \
+    --wandb_project unbc-5fold-cv
+```
+
+Replace `<best_checkpoint>.ckpt` with the actual filename from Stage 1 (e.g. `vitpain-epoch=68-val_regression_mae=1.457.ckpt`).
 
 ### Train on UNBC-McMaster (Single Fold)
 
-Train on a single fold of UNBC-McMaster (DinoV3 + LoRA + AU query head enabled by default):
+To train a single fold (e.g. fold 0) with a pretrained checkpoint:
 
 ```bash
 python train_unbc.py \
     --data_dir datasets/UNBC-McMaster \
+    --synthetic_pretrained_checkpoint experiment/vitpain_pretrain/checkpoints/<best_checkpoint>.ckpt \
     --model_size large_dinov3 \
     --fold 0 \
-    --batch_size 32 \
-    --max_epochs 30 \
+    --batch_size 100 \
+    --max_epochs 85 \
+    --use_weighted_sampling \
     --output_dir experiment/unbc_fold0 \
     --wandb_project unbc-training
 ```
 
-### 5-Fold Cross-Validation on UNBC-McMaster
+### SLURM (Compute Canada)
 
-Run complete 5-fold cross-validation:
+On Compute Canada clusters, prefix commands with `srun` and request GPU resources:
 
 ```bash
-python scripts/run_unbc_5fold_cv.py \
-    --data_dir datasets/UNBC-McMaster \
-    --model_size large_dinov3 \
-    --batch_size 100 \
-    --max_epochs 30 \
-    --output_dir experiment/unbc_5fold_cv \
-    --wandb_project unbc-5fold-cv
+srun python -u train_vitpain.py ...    # Stage 1
+srun python -u scripts/run_unbc_5fold_cv.py ...  # Stage 2
 ```
 
 ### Key Training Arguments
@@ -147,28 +174,32 @@ python scripts/run_unbc_5fold_cv.py \
 - `--model_size`: DinoV3 model size (default: `large_dinov3`)
   - Options: `small_dinov3`, `base_dinov3`, `large_dinov3`
 - `--use_neutral_reference`: Use neutral reference images
+- `--multi_shot_inference`: Number of neutral refs for multi-shot inference (default: 1)
 - `--lora_rank`: LoRA rank (default: 8)
 - `--lora_alpha`: LoRA alpha (default: 16)
 
-**Fixed Features (always enabled):**
-- DinoV3 backbone (always frozen)
-- LoRA adapters (only trainable parameters)
-- AU query head (cross-attention for AU prediction)
-- Binary classification head (pain/no-pain)
 
 #### Training Arguments:
 - `--batch_size`: Batch size per GPU (default: 32)
 - `--max_epochs`: Maximum training epochs (default: 100)
-
+- `--learning_rate`: Learning rate (default: 1e-4)
+- `--weight_decay`: Weight decay (default: 1e-1)
+- `--precision`: Training precision (default: 16)
+- `--synthetic_pretrained_checkpoint`: Path to pretrained checkpoint from Stage 1
+- `--dropout_rate`: Dropout rate for UNBC fine-tuning (default: 0.5)
 
 #### Data Arguments:
 - `--data_dir`: Path to dataset directory
 - `--fold`: Cross-validation fold (0-4 for UNBC)
+- `--split_csv`: Path to CSV with train/val/test splits (for synthetic data)
 - `--use_weighted_sampling`: Handle class imbalance
 
 #### Output Arguments:
 - `--output_dir`: Directory for checkpoints and logs
+- `--resume_from_checkpoint`: Resume training from a Lightning checkpoint
 - `--wandb_project`: Weights & Biases project name
+- `--wandb_group`: Group name for organizing runs
+- `--run_name`: Custom run name
 
 ## 📁 Project Structure
 

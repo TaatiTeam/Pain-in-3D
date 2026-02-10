@@ -18,8 +18,8 @@ sys.path.insert(0, str(project_root))
 def run_unbc_5fold_cv(
     data_dir="datasets/UNBC-McMaster",
     model_size="large_dinov3",
-    batch_size=32,
-    max_epochs=100,
+    batch_size=100,
+    max_epochs=50,
     output_dir="experiment/unbc_5fold_cv",
     wandb_group="unbc_5fold_cv",
     log_every_n_steps=10,
@@ -39,7 +39,7 @@ def run_unbc_5fold_cv(
     - weight_decay: 1e-1
     - precision: 16-bit
     - image_size: 224
-    - au_loss_weight: 0.1
+    - au_loss_weight: 0.1 (down-weighted for UNBC fine-tuning)
     - pspi_loss_weight: 1.0
     - wandb_project: "unbc-5fold-cv"
     """
@@ -97,6 +97,8 @@ def run_unbc_5fold_cv(
             "--fold", str(fold),
             "--log_every_n_steps", str(log_every_n_steps),
             "--run_name", f"{run_name_prefix}{fold}",
+            "--au_loss_weight", str(au_loss_weight),
+            "--pspi_loss_weight", str(pspi_loss_weight),
         ]
 
         if pretrained_checkpoint:
@@ -139,8 +141,8 @@ def main():
         choices=["small_dinov3", "base_dinov3", "large_dinov3"],
         help="DinoV3 model size"
     )
-    parser.add_argument("--batch_size", type=int, default=32)
-    parser.add_argument("--max_epochs", type=int, default=100)
+    parser.add_argument("--batch_size", type=int, default=100)
+    parser.add_argument("--max_epochs", type=int, default=50)
     parser.add_argument("--output_dir", type=str, default=None,
                         help="Base output directory")
     parser.add_argument("--wandb_group", type=str, default=None)

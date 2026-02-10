@@ -25,7 +25,7 @@ def train_vitpain(cfg):
     gpus = torch.cuda.device_count() if torch.cuda.is_available() else 0
     os.makedirs(cfg.output.output_dir, exist_ok=True)
 
-    num_workers = min(8, os.cpu_count() or 1)
+    num_workers = min(12, os.cpu_count() or 1)
     data_module = Pain3DDataModule(
         data_dir=cfg.data.data_dir,
         batch_size=cfg.training.batch_size,
