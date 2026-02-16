@@ -1,11 +1,15 @@
 # Pain in 3D: Generating Controllable Synthetic Faces for Automated Pain Assessment
 
 <a href="https://opensource.org/licenses/MIT" target="_blank" rel="noopener noreferrer"><img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="License: MIT"></a>
+<a href="https://xinlei55555.github.io/pain-in-3d.github.io/" target="_blank" rel="noopener noreferrer"><img src="https://img.shields.io/badge/Project-Page-green" alt="Project Page"></a>
 <a href="https://arxiv.org/pdf/2509.16727" target="_blank" rel="noopener noreferrer"><img src="https://img.shields.io/badge/Paper-arXiv%202509.16727-B31B1B.svg" alt="Paper"></a>
 <a href="https://huggingface.co/datasets/SoroushMehraban/3D-Pain" target="_blank" rel="noopener noreferrer"><img src="https://img.shields.io/badge/Dataset-3D--Pain-blue" alt="Dataset"></a>
 <a href="https://huggingface.co/xinlei55555/ViTPain" target="_blank" rel="noopener noreferrer"><img src="https://img.shields.io/badge/Model-ViTPain-blue" alt="Model"></a>
 
-Official implementation of the paper **Pain in 3D: Generating Controllable Synthetic Faces for Automated Pain Assessment**. This codebase supports training on both synthetic 3D pain face datasets and the UNBC-McMaster Shoulder Pain Expression Archive.
+**Official implementation** of the paper **Pain in 3D: Generating Controllable Synthetic Faces for Automated Pain Assessment**.  
+📌 **Official project page:** [https://xinlei55555.github.io/pain-in-3d.github.io/](https://xinlei55555.github.io/pain-in-3d.github.io/)
+
+This codebase supports training on both synthetic 3D pain face datasets and the UNBC-McMaster Shoulder Pain Expression Archive.
 
 ## 📄 Overview
 
