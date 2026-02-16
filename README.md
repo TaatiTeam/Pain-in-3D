@@ -268,9 +268,7 @@ python scripts/evaluate_unbc_verbose.py experiment/unbc_5fold_cv
 - `--learning_rate`: Learning rate (default: 1e-4)
 - `--weight_decay`: Weight decay (default: 1e-1)
 - `--precision`: 16 or 32 (default: 16)
-- `--au_loss_weight`: Weight for AU prediction loss
-  - Use **1.0** for synthetic data (balanced AU learning)
-  - Use **0.1** for UNBC (focus on PSPI regression)
+- `--au_loss_weight`: Weight for AU prediction loss (default: 1.0)
 - `--pspi_loss_weight`: Weight for PSPI regression loss (default: 1.0)
 
 #### Data:
