@@ -27,3 +27,6 @@ experiment*
 # huggingface upload
 HF_README.md
 scripts/upload_to_huggingface.py
+
+# archived scripts
+archive
