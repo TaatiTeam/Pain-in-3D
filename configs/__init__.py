@@ -41,7 +41,7 @@ class DataConfig:
 
 @dataclass
 class LossConfig:
-    au_loss_weight: float = 1.0
+    au_loss_weight: float = 1.0  # Use 1.0 for synthetic data, 0.1 for UNBC fine-tuning
     pspi_loss_weight: float = 1.0
 
 
@@ -102,7 +102,8 @@ def parse_args():
                         help="Path to pretrained checkpoint from synthetic training")
 
     # Loss
-    parser.add_argument("--au_loss_weight", type=float, default=1.0)
+    parser.add_argument("--au_loss_weight", type=float, default=1.0,
+                        help="Weight for AU loss (use 1.0 for synthetic, 0.1 for UNBC)")
     parser.add_argument("--pspi_loss_weight", type=float, default=1.0)
 
     # Data

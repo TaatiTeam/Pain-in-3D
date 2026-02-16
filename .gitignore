@@ -10,7 +10,20 @@ pain_env/
 # testing files
 test_training.py
 
+# verbose/backup evaluation script
+scripts/evaluate_unbc_verbose.py
+
+# cluster-specific training scripts (Compute Canada/SLURM)
+scripts/run_vitpain_pretrain_*.sh
+scripts/run_unbc_5fold_pretrained_*.sh
+scripts/run_unbc_production.sh
+scripts/run_evaluate_unbc.sh
+
 # logs
 logs/
 wandb/
 experiment*
+
+# huggingface upload
+HF_README.md
+scripts/upload_to_huggingface.py

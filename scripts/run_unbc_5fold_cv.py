@@ -29,6 +29,7 @@ def run_unbc_5fold_cv(
     use_neutral_reference=False,
     multi_shot_inference=1,
     use_weighted_sampling=False,
+    wandb_project="unbc-5fold-cv",
     folds=None,
 ):
     """
@@ -41,7 +42,6 @@ def run_unbc_5fold_cv(
     - image_size: 224
     - au_loss_weight: 0.1 (down-weighted for UNBC fine-tuning)
     - pspi_loss_weight: 1.0
-    - wandb_project: "unbc-5fold-cv"
     """
     if pretrained_checkpoint is not None:
         if not os.path.exists(pretrained_checkpoint):
@@ -56,7 +56,6 @@ def run_unbc_5fold_cv(
     image_size = 224
     au_loss_weight = 0.1
     pspi_loss_weight = 1.0
-    wandb_project = "unbc-5fold-cv"
     wandb_entity = None
 
     os.makedirs(output_dir, exist_ok=True)
@@ -145,6 +144,8 @@ def main():
     parser.add_argument("--max_epochs", type=int, default=50)
     parser.add_argument("--output_dir", type=str, default=None,
                         help="Base output directory")
+    parser.add_argument("--wandb_project", type=str, default="UNBC-EVALUATION",
+                        help="Wandb project name")
     parser.add_argument("--wandb_group", type=str, default=None)
     parser.add_argument("--log_every_n_steps", type=int, default=10)
     parser.add_argument("--lora_rank", type=int, default=8)
@@ -179,6 +180,7 @@ def main():
         use_neutral_reference=args.use_neutral_reference,
         multi_shot_inference=args.multi_shot_inference,
         use_weighted_sampling=args.use_weighted_sampling,
+        wandb_project=args.wandb_project,
         folds=args.folds,
     )
 

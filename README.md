@@ -26,13 +26,21 @@ This implementation provides tools for automated pain assessment through:
 
 ## 📋 Table of Contents
 
-- [Visual Overview](#visual-overview)
-- [Installation](#installation)
-- [Dataset Setup](#dataset-setup)
-- [Training](#training)
-- [Model Architecture](#model-architecture)
-- [Project Structure](#project-structure)
-- [Citation](#citation)
+- [Visual Overview](#️-visual-overview)
+- [Installation](#-installation)
+- [Dataset Setup](#-dataset-setup)
+- [Training](#-training)
+  - [Download Pretrained Weights](#download-pretrained-weights)
+  - [Quick Start with Shell Scripts](#quick-start-with-shell-scripts)
+  - [Stage 1: Pretrain on Synthetic Data](#stage-1-pretrain-on-synthetic-3dpain-dataset-optional)
+  - [Stage 2: 5-Fold Cross-Validation](#stage-2-5-fold-cross-validation-on-unbc-mcmaster)
+  - [Stage 3: Production Training](#stage-3-production-training-optional)
+  - [Evaluation](#evaluation)
+- [Model Architecture](#-model-architecture)
+- [Evaluation Metrics](#-evaluation-metrics)
+- [Project Structure](#-project-structure)
+- [Citation](#-citation)
+- [License](#-license)
 
 ## 🚀 Installation
 
@@ -55,6 +63,7 @@ pip install -r requirements.txt
 - Transformers (for ViT models)
 - timm (for DinoV3 models)
 - wandb (for experiment tracking)
+- huggingface-hub (for downloading pretrained weights)
 
 ## 💾 Dataset Setup
 
@@ -100,9 +109,50 @@ python -c "from datasets import load_dataset; load_dataset('SoroushMehraban/3D-P
 
 Training follows a two-stage pipeline: (1) pretrain on synthetic 3DPain data, then (2) fine-tune on UNBC-McMaster using the pretrained checkpoint.
 
-### Stage 1: Pretrain on Synthetic 3DPain Dataset
+### Download Pretrained Weights
 
-Pretrain the ViTPain model on synthetic 3D pain faces with a train/val/test split:
+We provide pretrained weights on Hugging Face that were trained on the 3D-Pain synthetic dataset:
+
+```python
+from huggingface_hub import hf_hub_download
+
+# Download pretrained checkpoint
+checkpoint_path = hf_hub_download(
+    repo_id="xinlei55555/ViTPain",
+    filename="vitpain-epoch=141-val_regression_mae=1.859.ckpt",
+    cache_dir="./checkpoints"
+)
+```
+
+Or download via command line:
+```bash
+pip install huggingface-hub
+huggingface-cli download xinlei55555/ViTPain \
+    vitpain-epoch=141-val_regression_mae=1.859.ckpt \
+    --local-dir ./experiment/vitpain_pretrain/checkpoints/
+```
+
+**Model Card**: [https://huggingface.co/xinlei55555/ViTPain](https://huggingface.co/xinlei55555/ViTPain)
+
+### Quick Start with Shell Scripts
+
+```bash
+# Option A: Download pretrained weights (recommended, see above)
+# Option B: Train from scratch on synthetic data
+./scripts/train_synthetic_pretrain.sh
+
+# Then: 5-fold cross-validation on UNBC
+./scripts/train_unbc_5fold.sh
+
+# Evaluate results
+python scripts/evaluate_unbc.py experiment/unbc_5fold_cv
+```
+
+### Stage 1: Pretrain on Synthetic 3DPain Dataset (Optional)
+
+**Skip this step if you downloaded pretrained weights above.**
+
+Otherwise, pretrain the ViTPain model on synthetic 3D pain faces:
 
 ```bash
 python train_vitpain.py \
@@ -110,119 +160,171 @@ python train_vitpain.py \
     --split_csv data/splits/uniform_data_70_20_10_split.csv \
     --model_size large_dinov3 \
     --batch_size 48 \
-    --max_epochs 100 \
+    --max_epochs 150 \
     --learning_rate 1e-4 \
     --weight_decay 1e-1 \
+    --au_loss_weight 1.0 \
+    --pspi_loss_weight 1.0 \
     --lora_rank 8 \
     --lora_alpha 16 \
-    --log_every_n_steps 100 \
-    --output_dir experiment/vitpain_pretrain \
-    --wandb_project vitpain-pretrain
+    --use_neutral_reference \
+    --output_dir experiment/vitpain_pretrain
 ```
 
-The best checkpoint (lowest `val/regression/mae`) is saved to `experiment/vitpain_pretrain/checkpoints/`.
+The best checkpoint is saved to `experiment/vitpain_pretrain/checkpoints/`.
 
 ### Stage 2: 5-Fold Cross-Validation on UNBC-McMaster
 
-Run 5-fold CV on UNBC using the pretrained checkpoint from Stage 1:
+Run 5-fold CV on UNBC using a pretrained checkpoint (either downloaded or trained from scratch):
 
 ```bash
+# Using downloaded Hugging Face checkpoint
 python scripts/run_unbc_5fold_cv.py \
-    --pretrained_checkpoint experiment/vitpain_pretrain/checkpoints/<best_checkpoint>.ckpt \
+    --pretrained_checkpoint ./checkpoints/vitpain-epoch=141-val_regression_mae=1.859.ckpt \
     --data_dir datasets/UNBC-McMaster \
     --model_size large_dinov3 \
     --batch_size 100 \
-    --max_epochs 85 \
+    --max_epochs 50 \
+    --au_loss_weight 0.1 \
     --use_weighted_sampling \
+    --use_neutral_reference \
     --lora_rank 8 \
     --lora_alpha 16 \
-    --log_every_n_steps 10 \
-    --wandb_project unbc-5fold-cv
-```
+    --output_dir experiment/unbc_5fold_cv
 
-Replace `<best_checkpoint>.ckpt` with the actual filename from Stage 1 (e.g. `vitpain-epoch=68-val_regression_mae=1.457.ckpt`).
-
-### Train on UNBC-McMaster (Single Fold)
-
-To train a single fold (e.g. fold 0) with a pretrained checkpoint:
-
-```bash
-python train_unbc.py \
+# Or using checkpoint trained from scratch in Stage 1
+python scripts/run_unbc_5fold_cv.py \
+    --pretrained_checkpoint experiment/vitpain_pretrain/checkpoints/best.ckpt \
     --data_dir datasets/UNBC-McMaster \
-    --synthetic_pretrained_checkpoint experiment/vitpain_pretrain/checkpoints/<best_checkpoint>.ckpt \
     --model_size large_dinov3 \
-    --fold 0 \
     --batch_size 100 \
-    --max_epochs 85 \
+    --max_epochs 50 \
+    --au_loss_weight 0.1 \
     --use_weighted_sampling \
-    --output_dir experiment/unbc_fold0 \
-    --wandb_project unbc-training
+    --use_neutral_reference \
+    --lora_rank 8 \
+    --lora_alpha 16 \
+    --output_dir experiment/unbc_5fold_cv
 ```
 
-### SLURM (Compute Canada)
+### Stage 3: Production Training (Optional)
 
-On Compute Canada clusters, prefix commands with `srun` and request GPU resources:
+Train a final model on ALL UNBC data for deployment (use downloaded or trained checkpoint):
 
 ```bash
-srun python -u train_vitpain.py ...    # Stage 1
-srun python -u scripts/run_unbc_5fold_cv.py ...  # Stage 2
+# Using downloaded Hugging Face checkpoint
+python scripts/train_unbc_production.py \
+    --synthetic_pretrained_checkpoint ./checkpoints/vitpain-epoch=141-val_regression_mae=1.859.ckpt \
+    --data_dir datasets/UNBC-McMaster \
+    --batch_size 100 \
+    --max_epochs 50 \
+    --au_loss_weight 0.1 \
+    --use_neutral_reference \
+    --use_weighted_sampling \
+    --output_dir experiment/unbc_production
 ```
 
-### Key Training Arguments
+### Evaluation
 
-#### Model Arguments:
-- `--model_size`: DinoV3 model size (default: `large_dinov3`)
-  - Options: `small_dinov3`, `base_dinov3`, `large_dinov3`
-- `--use_neutral_reference`: Use neutral reference images
-- `--multi_shot_inference`: Number of neutral refs for multi-shot inference (default: 1)
+Evaluate 5-fold cross-validation results:
+
+```bash
+python scripts/evaluate_unbc.py experiment/unbc_5fold_cv
+```
+
+With multi-shot inference (averages predictions across N neutral references):
+```bash
+python scripts/evaluate_unbc.py experiment/unbc_5fold_cv \
+    --use_neutral_reference --multi_shot_inference 3
+```
+
+Key metrics reported:
+- **Pearson Correlation**: Mean across folds with 95% CI
+- **AUROC**: At PSPI thresholds 1, 2, 3 (mean across folds)
+- **Train-Calibrated F1**: Threshold tuned on train set, applied to test set
+  - Most realistic evaluation for production use
+  - Reported at PSPI thresholds 1, 2, 3 and macro average
+
+For detailed metrics (test-calibrated F1, uncalibrated F1, combined metrics), use:
+```bash
+python scripts/evaluate_unbc_verbose.py experiment/unbc_5fold_cv
+```
+
+### Training Arguments
+
+#### Model:
+- `--model_size`: `small_dinov3`, `base_dinov3`, or `large_dinov3`
+- `--use_neutral_reference`: Enable neutral reference images
+- `--multi_shot_inference`: Number of neutral refs for ensemble (default: 1)
 - `--lora_rank`: LoRA rank (default: 8)
 - `--lora_alpha`: LoRA alpha (default: 16)
 
-
-#### Training Arguments:
-- `--batch_size`: Batch size per GPU (default: 32)
-- `--max_epochs`: Maximum training epochs (default: 100)
+#### Training:
+- `--batch_size`: Batch size per GPU (default: 48 for synthetic, 100 for UNBC)
+- `--max_epochs`: Maximum epochs (default: 150 for synthetic, 50 for UNBC)
 - `--learning_rate`: Learning rate (default: 1e-4)
 - `--weight_decay`: Weight decay (default: 1e-1)
-- `--precision`: Training precision (default: 16)
-- `--synthetic_pretrained_checkpoint`: Path to pretrained checkpoint from Stage 1
-- `--dropout_rate`: Dropout rate for UNBC fine-tuning (default: 0.5)
+- `--precision`: 16 or 32 (default: 16)
+- `--au_loss_weight`: Weight for AU prediction loss
+  - Use **1.0** for synthetic data (balanced AU learning)
+  - Use **0.1** for UNBC (focus on PSPI regression)
+- `--pspi_loss_weight`: Weight for PSPI regression loss (default: 1.0)
 
-#### Data Arguments:
-- `--data_dir`: Path to dataset directory
-- `--fold`: Cross-validation fold (0-4 for UNBC)
-- `--split_csv`: Path to CSV with train/val/test splits (for synthetic data)
+#### Data:
+- `--data_dir`: Path to dataset
+- `--fold`: CV fold for UNBC (0-4)
+- `--split_csv`: Train/val/test split CSV (for synthetic data)
 - `--use_weighted_sampling`: Handle class imbalance
 
-#### Output Arguments:
-- `--output_dir`: Directory for checkpoints and logs
-- `--resume_from_checkpoint`: Resume training from a Lightning checkpoint
-- `--wandb_project`: Weights & Biases project name
-- `--wandb_group`: Group name for organizing runs
+#### Output:
+- `--output_dir`: Checkpoint and log directory
+- `--wandb_project`: W&B project name
 - `--run_name`: Custom run name
+
+### Directory Structure After Training
+
+```
+experiment/
+├── vitpain_pretrain/              # Stage 1: Pretrained model
+│   └── checkpoints/
+│       └── best.ckpt
+├── unbc_5fold_cv/                 # Stage 2: Cross-validation
+│   ├── fold_0/
+│   │   └── checkpoints/
+│   ├── fold_1/
+│   ├── ...
+│   └── combined_evaluation_results_corr.txt
+└── unbc_production/               # Stage 3: Production model
+    └── checkpoints/
+        └── best.ckpt
+```
 
 ## 📁 Project Structure
 
 ```
 PainGeneration_clean/
-├── data/                          # Data loaders
-│   ├── unbc_loader.py            # UNBC-McMaster dataset loader
-│   ├── pain3d_loader.py          # 3D synthetic pain face dataset loader
-│   ├── split_utils.py            # Split utilities
-│   └── utils/
-│       └── threshold_calibration.py # Binary threshold calibration
-├── lib/                           # Library code
-│   ├── models/                   # Model definitions
-│   │   ├── vitpain.py               # ViTPain model
-│   │   └── pspi_evaluator_mixin.py  # Evaluation metrics
-│   └── utils/                    # Utility functions
-├── scripts/                       # Training scripts
-│   └── run_unbc_5fold_cv.py      # 5-fold cross-validation
-├── train_unbc.py                 # Train on UNBC-McMaster
-├── train_vitpain.py              # Train on synthetic data
-├── configs/                      # Configuration management
-├── requirements.txt              # Python dependencies
-└── README.md                     # This file
+├── data/                                  # Data loaders
+│   ├── unbc_loader.py                    # UNBC-McMaster dataset loader
+│   ├── pain3d_loader.py                  # 3D synthetic pain face dataset loader
+│   └── split_utils.py                    # Split utilities
+├── lib/                                   # Library code
+│   └── models/                           # Model definitions
+│       ├── vitpain.py                    # ViTPain model
+│       └── pspi_evaluator_mixin.py       # Evaluation metrics
+├── scripts/                               # Training & evaluation scripts
+│   ├── train_synthetic_pretrain.sh       # Pretrain on synthetic data
+│   ├── train_unbc_5fold.sh              # 5-fold cross-validation
+│   ├── train_unbc_production_simple.sh  # Production training
+│   ├── run_unbc_5fold_cv.py             # 5-fold CV Python script
+│   ├── train_unbc_production.py         # Production training script
+│   ├── evaluate_unbc.py                 # Main evaluation (clean output)
+│   └── evaluate_unbc_verbose.py         # Verbose evaluation (all metrics)
+├── configs/                               # Configuration management
+│   └── __init__.py                       # Config dataclasses and parser
+├── train_vitpain.py                      # Train on synthetic data
+├── train_unbc.py                         # Train on UNBC-McMaster
+├── requirements.txt                      # Python dependencies
+└── README.md                             # This file
 ```
 
 ## 🧠 Model Architecture
@@ -256,11 +358,11 @@ The code reports the following core metrics:
 
 ### Classification Metrics:
 - Binary F1, Precision, Recall (pain vs. no-pain)
-- AUROC and AUPR
+- AUROC
 
 ## 🔗 Citation
 
-If you use this code or the 3DPain dataset in your research, please cite:
+If you use this code, pretrained weights, or the 3DPain dataset in your research, please cite:
 
 ```bibtex
 @article{lin2025pain,
